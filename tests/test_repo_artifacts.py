@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_repository_fatemi_config_parses_cleanly():
     cfg = load_config(ROOT / "config" / "fatemi.yaml")
-    assert cfg.get("decision.backend") == "mdeberta-nli"
+    assert cfg.get("decision.backend") == "laya-multilingual"
     assert cfg.get("decision.model_override") is None
     assert cfg.get("decision.ensemble_backends") == [
         "mdeberta-nli",
@@ -33,6 +33,7 @@ def test_colab_notebook_avoids_package_namespace_collision_and_compiles():
     assert "/content/divar_scanner_repo" in code
     assert "REPO = '/content/divar_scanner_repo'" in code
     assert "endswith('/src/divar_scanner/__init__.py')" in code
+    assert "laya-multilingual" in code
     assert "mdeberta-nli" in code
     assert "local-qwen" not in code
     for i, source in enumerate(code_cells):
