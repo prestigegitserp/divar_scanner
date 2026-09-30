@@ -249,6 +249,21 @@ def run_pipeline(
         review_df.to_csv(review_path, index=False, encoding="utf-8-sig")
         paths["review_csv"] = str(review_path)
 
+        annotation_path = out_dir / f"decision_annotation_sample_{stamp}.csv"
+        annotation_df = df[df["decision_evaluated"] == True].copy()  # noqa: E712
+        for label_col in (
+            "human_disposition",
+            "human_bait",
+            "human_data_error",
+            "human_manual_review",
+            "human_consistency_level",
+            "human_notes",
+        ):
+            if label_col not in annotation_df:
+                annotation_df[label_col] = ""
+        annotation_df.to_csv(annotation_path, index=False, encoding="utf-8-sig")
+        paths["annotation_csv"] = str(annotation_path)
+
     if bool(config.get("output.write_parquet", True)):
         pq_path = out_dir / f"listings_scored_{stamp}.parquet"
         df.to_parquet(pq_path, index=False)
