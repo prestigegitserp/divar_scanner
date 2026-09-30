@@ -827,6 +827,16 @@ def apply_decisions(
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     out = _empty_decision_columns(df)
     d = config.section("decision")
+    calibration_file = d.get("calibration_file")
+    if calibration_file:
+        requested = Path(str(calibration_file))
+        if not requested.is_absolute():
+            candidates_for_path = [
+                config.source.parent / requested,
+                Path.cwd() / requested,
+            ]
+            resolved = next((p for p in candidates_for_path if p.exists()), requested)
+            d["calibration_file"] = str(resolved)
     if not bool(d.get("enabled", True)) or out.empty:
         return out, {
             "enabled": False,
