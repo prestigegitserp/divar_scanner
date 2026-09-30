@@ -21,13 +21,20 @@ def _robust_z(series: pd.Series) -> pd.Series:
 
 
 def _peer_robust_z(
-    df: pd.DataFrame, value_col: str, peer_min_count: int, clip: float
+    df: pd.DataFrame,
+    value_col: str,
+    peer_min_count: int,
+    clip: float,
+    *,
+    include_contract_style: bool = False,
 ) -> pd.Series:
     result = pd.Series(np.nan, index=df.index, dtype=float)
+    prefix = ["contract_style"] if include_contract_style and "contract_style" in df else []
     levels = [
-        ["neighborhood", "area_bucket", "rooms"],
-        ["neighborhood", "area_bucket"],
-        ["neighborhood"],
+        prefix + ["neighborhood", "area_bucket", "rooms"],
+        prefix + ["neighborhood", "area_bucket"],
+        prefix + ["neighborhood"],
+        prefix,
     ]
     for group_cols in levels:
         valid_cols = [c for c in group_cols if c in df.columns]
@@ -53,36 +60,82 @@ def add_market_anomaly(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     clip = float(a.get("robust_z_clip", 8.0))
     peer_min_count = int(a.get("peer_min_count", 8))
 
-    z_cols = []
-    for value_col in ("deposit_per_m2", "rent_per_m2", "equivalent_deposit_per_m2"):
+    # Primary price signal: equivalent price under several rent↔deposit conversion assumptions.
+    eq_cols = [
+        c for c in out.columns
+        if c.startswith("equivalent_deposit_") and c.endswith("_per_m2")
+    ]
+    eq_scores = []
+    for value_col in sorted(eq_cols):
+        name = f"peer_anomaly_{value_col}"
+        out[name] = _peer_robust_z(out, value_col, peer_min_count, clip)
+        eq_scores.append(name)
+
+    if "equivalent_deposit_per_m2" in out and not eq_scores:
+        name = "peer_anomaly_equivalent_deposit_per_m2"
+        out[name] = _peer_robust_z(
+            out, "equivalent_deposit_per_m2", peer_min_count, clip
+        )
+        eq_scores.append(name)
+
+    if eq_scores:
+        eq_matrix = out[eq_scores].astype(float)
+        out["equivalent_price_anomaly"] = eq_matrix.median(axis=1)
+        out["equivalence_sensitivity"] = eq_matrix.std(axis=1).fillna(0.0)
+    else:
+        out["equivalent_price_anomaly"] = 0.0
+        out["equivalence_sensitivity"] = 0.0
+
+    # Deposit and rent separately are secondary evidence and must respect contract style.
+    style_scores = []
+    for value_col in ("deposit_per_m2", "rent_per_m2"):
         if value_col in out:
             name = f"peer_anomaly_{value_col}"
-            out[name] = _peer_robust_z(out, value_col, peer_min_count, clip)
-            z_cols.append(name)
-    out["robust_market_anomaly"] = out[z_cols].max(axis=1) if z_cols else 0.0
+            out[name] = _peer_robust_z(
+                out,
+                value_col,
+                peer_min_count,
+                clip,
+                include_contract_style=True,
+            )
+            style_scores.append(name)
+    out["contract_component_anomaly"] = (
+        out[style_scores].max(axis=1) if style_scores else 0.0
+    )
+
+    # If an "anomaly" appears only under one arbitrary conversion factor, trust it less.
+    sensitivity_penalty = (1.0 - 0.35 * out["equivalence_sensitivity"].clip(0, 1))
+    out["robust_market_anomaly"] = np.clip(
+        (
+            0.78 * out["equivalent_price_anomaly"]
+            + 0.22 * out["contract_component_anomaly"]
+        )
+        * sensitivity_penalty,
+        0,
+        1,
+    )
 
     numeric = pd.DataFrame(index=out.index)
     base_cols = [
         "area_m2",
         "rooms",
         "year_built_shamsi",
-        "deposit_toman",
-        "rent_monthly_toman",
         "equivalent_deposit_per_m2",
+        "contract_rent_share",
         "description_len",
     ]
     for col in base_cols:
         if col not in out:
             continue
         s = pd.to_numeric(out[col], errors="coerce")
-        if col in {"deposit_toman", "rent_monthly_toman", "equivalent_deposit_per_m2"}:
+        if col == "equivalent_deposit_per_m2":
             s = np.log1p(s.clip(lower=0))
         med = s.median()
         numeric[col] = s.fillna(0.0 if pd.isna(med) else med)
 
     if len(out) >= 12 and numeric.shape[1] >= 2:
         model = IsolationForest(
-            n_estimators=250,
+            n_estimators=300,
             contamination=a.get("isolation_contamination", "auto"),
             random_state=int(config.get("project.random_seed", 42)),
             n_jobs=-1,
@@ -96,7 +149,10 @@ def add_market_anomaly(df: pd.DataFrame, config: Config) -> pd.DataFrame:
         out["isolation_anomaly_score"] = 0.0
 
     out["market_anomaly_score"] = np.clip(
-        0.65 * out["robust_market_anomaly"] + 0.35 * out["isolation_anomaly_score"], 0, 1
+        0.72 * out["robust_market_anomaly"]
+        + 0.28 * out["isolation_anomaly_score"],
+        0,
+        1,
     )
     return out
 
