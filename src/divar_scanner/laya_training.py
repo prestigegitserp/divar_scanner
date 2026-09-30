@@ -109,14 +109,12 @@ def _adapt_gold_for_laya(
         if len(probs) != len(forward):
             missing = sorted(set(forward.values()) - set(probs))
             raise ValueError(f"gold probabilities for {qid!r} missed opaque options: {missing}")
-        mapped = {
-            **g,
+        # Model-facing questions are all closed choices. Keep gold minimal so the
+        # upstream trainer never sees stale logical fields such as a score value.
+        out[qid] = {
             "label": forward[label],
             "probabilities": probs,
         }
-        # Laya transport is always a closed choice; retain original score target only
-        # as metadata for audit, not as the model-facing label.
-        out[qid] = mapped
     return out
 
 
