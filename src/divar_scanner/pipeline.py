@@ -17,16 +17,16 @@ from .advanced import (
 from .anomaly import add_duplicate_score, add_market_anomaly, prefilter_score
 from .config import Config, load_config
 from .crawler import DivarCrawler
+from .decision import apply_decisions
 from .features import add_features
 from .normalize import normalize_many
 from .report import build_html_report
-from .semantic import apply_semantic
 
 
 def _as_float(row: pd.Series, name: str) -> float:
     try:
         v = row.get(name, 0)
-        if pd.isna(v):
+        if v is None or pd.isna(v):
             return 0.0
         return float(v)
     except Exception:
@@ -51,18 +51,44 @@ def _reason(row: pd.Series, config: Config) -> str:
         reasons.append(
             f"duplicate cluster inconsistency (n={int(_as_float(row, 'duplicate_cluster_size'))})"
         )
-    threshold = float(config.get("anomaly.duplicate_similarity_threshold", 0.88))
-    if _as_float(row, "duplicate_similarity") >= threshold:
-        reasons.append("near-duplicate text")
-    if _as_float(row, "semantic_score") >= 0.55:
-        provider = str(row.get("semantic_provider", "semantic"))
-        reasons.append(f"semantic suspicion ({provider})")
-    cls = str(row.get("semantic_classification", ""))
-    if cls and cls not in {"plausible", "market_outlier", "not_evaluated", "unknown"}:
-        reasons.append(f"class:{cls}")
-    if _as_float(row, "uncertainty_score") >= 0.28:
+
+    if bool(row.get("decision_evaluated", False)):
+        bait = _as_float(row, "decision_bait_probability")
+        data_error = _as_float(row, "decision_data_error_probability")
+        review = _as_float(row, "decision_manual_review_probability")
+        if bait >= 0.60:
+            reasons.append(f"bounded decision: bait/misleading p={bait:.2f}")
+        if data_error >= 0.65:
+            reasons.append(f"bounded decision: data-error p={data_error:.2f}")
+        if review >= 0.65:
+            reasons.append(f"bounded decision: manual-review p={review:.2f}")
+        disposition = str(row.get("decision_disposition", "") or "")
+        if disposition and disposition not in {"plausible", "market_outlier"}:
+            reasons.append(f"decision:{disposition}")
+
+    if _as_float(row, "uncertainty_score") >= 0.32:
         reasons.append("detectors disagree → human review")
-    return "; ".join(dict.fromkeys(reasons)) or "low combined risk"
+    return "; ".join(dict.fromkeys(reasons)) or "low combined review risk"
+
+
+def _rowwise_weighted_mean(
+    frame: pd.DataFrame,
+    weighted_columns: dict[str, float],
+) -> tuple[pd.Series, pd.Series]:
+    numerator = pd.Series(0.0, index=frame.index)
+    denominator = pd.Series(0.0, index=frame.index)
+    for column, weight in weighted_columns.items():
+        values = pd.to_numeric(frame[column], errors="coerce")
+        mask = values.notna()
+        numerator.loc[mask] += values.loc[mask] * float(weight)
+        denominator.loc[mask] += float(weight)
+    score = numerator / denominator.replace(0, np.nan)
+    return score.fillna(0.0), denominator
+
+
+def _available_std(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
+    values = frame[columns].apply(pd.to_numeric, errors="coerce")
+    return values.std(axis=1, skipna=True).fillna(0.0)
 
 
 def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
@@ -71,52 +97,69 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     threshold = float(config.get("anomaly.duplicate_similarity_threshold", 0.88))
     denom = max(1e-6, 1.0 - threshold)
     nearest_dup = np.clip(
-        (pd.to_numeric(out["duplicate_similarity"], errors="coerce").fillna(0) - threshold) / denom,
-        0, 1,
+        (pd.to_numeric(out["duplicate_similarity"], errors="coerce").fillna(0) - threshold)
+        / denom,
+        0,
+        1,
     )
-    bait = pd.to_numeric(out.get("duplicate_bait_score", 0), errors="coerce").fillna(0)
-    out["duplicate_risk"] = np.maximum(nearest_dup, bait)
+    bait_graph = pd.to_numeric(out.get("duplicate_bait_score", 0), errors="coerce").fillna(0)
+    out["duplicate_risk"] = np.maximum(nearest_dup, bait_graph)
 
-    confidence = pd.to_numeric(out.get("semantic_confidence", 0.35), errors="coerce").fillna(0.35)
-    semantic = pd.to_numeric(out.get("semantic_score", 0), errors="coerce").fillna(0)
-    # A weak/fallback semantic opinion must not dominate deterministic evidence.
-    out["semantic_effective_score"] = semantic * (0.45 + 0.55 * confidence.clip(0, 1))
-
-    channels = pd.DataFrame(
-        {
-            "quality": pd.to_numeric(out["data_quality_score"], errors="coerce").fillna(0),
-            "market": pd.to_numeric(out["market_anomaly_score"], errors="coerce").fillna(0),
-            "duplicate": out["duplicate_risk"].fillna(0),
-            "semantic": out["semantic_effective_score"].fillna(0),
-        },
-        index=out.index,
+    # The bounded decision model contributes only when that row was actually evaluated.
+    decision_bait = pd.to_numeric(
+        out.get("decision_bait_probability", np.nan), errors="coerce"
     )
-    out["uncertainty_score"] = channels.std(axis=1).clip(0, 0.5) * 2.0
+    decision_consistency = pd.to_numeric(
+        out.get("decision_consistency_score", np.nan), errors="coerce"
+    )
+    decision_conflict = 1.0 - decision_consistency
+    out["decision_risk_score"] = np.where(
+        pd.to_numeric(out.get("decision_evaluated", False), errors="coerce").fillna(0).astype(bool),
+        np.maximum(decision_bait, 0.35 * decision_conflict),
+        np.nan,
+    )
 
     weights = {
         "data_quality_score": float(s.get("data_quality_weight", 0.22)),
         "market_anomaly_score": float(s.get("market_anomaly_weight", 0.38)),
         "duplicate_risk": float(s.get("duplicate_weight", 0.16)),
-        "semantic_effective_score": float(s.get("semantic_weight", 0.24)),
+        "decision_risk_score": float(s.get("decision_weight", 0.24)),
     }
-    total = max(sum(weights.values()), 1e-9)
-    score = sum(pd.to_numeric(out[col], errors="coerce").fillna(0) * w for col, w in weights.items()) / total
-    out["suspicion_score"] = np.clip(score, 0, 1)
+    suspicion, weight_sum = _rowwise_weighted_mean(out, weights)
+    out["suspicion_score"] = np.clip(suspicion, 0, 1)
+    out["evidence_weight_sum"] = weight_sum
+
+    component_cols = [
+        "data_quality_score",
+        "market_anomaly_score",
+        "duplicate_risk",
+        "decision_risk_score",
+    ]
+    out["uncertainty_score"] = np.clip(
+        _available_std(out, component_cols) * 2.0,
+        0,
+        1,
+    )
 
     review_prob = pd.to_numeric(
-        out.get("semantic_review_probability", 0), errors="coerce"
-    ).fillna(0)
+        out.get("decision_manual_review_probability", np.nan), errors="coerce"
+    )
+    review_component = review_prob.where(review_prob.notna(), 0.0)
     out["review_priority_score"] = np.clip(
-        0.78 * out["suspicion_score"]
-        + 0.14 * out["uncertainty_score"]
-        + 0.08 * review_prob,
-        0, 1,
+        0.80 * out["suspicion_score"]
+        + 0.12 * out["uncertainty_score"]
+        + 0.08 * review_component,
+        0,
+        1,
     )
 
     review_t = float(s.get("review_threshold", 0.58))
     high_t = float(s.get("high_risk_threshold", 0.78))
     out["risk_band"] = np.select(
-        [out["review_priority_score"] >= high_t, out["review_priority_score"] >= review_t],
+        [
+            out["review_priority_score"] >= high_t,
+            out["review_priority_score"] >= review_t,
+        ],
         ["high", "review"],
         default="normal",
     )
@@ -145,7 +188,7 @@ def run_pipeline(
     config = load_config(config_path)
     meta: dict[str, Any] = {
         "project": config.get("project.name", "Divar Scanner"),
-        "pipeline_version": "0.2.0",
+        "pipeline_version": "0.3.0",
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": str(config_path),
     }
@@ -155,7 +198,10 @@ def run_pipeline(
         raw, crawl_meta = crawler.crawl()
         meta["crawl"] = crawl_meta
         meta.update(crawl_meta)
-        df = normalize_many(raw, redact_phones=bool(config.get("crawl.redact_phone_numbers", True)))
+        df = normalize_many(
+            raw,
+            redact_phones=bool(config.get("crawl.redact_phone_numbers", True)),
+        )
     else:
         if input_path is None:
             raise ValueError("input_path is required when crawl=False")
@@ -166,7 +212,7 @@ def run_pipeline(
         meta["counts"] = {"total": 0, "normal": 0, "review": 0, "high": 0}
         return df, meta
 
-    # Evidence pipeline: deterministic → distributional → learned OOF → graph → semantic.
+    # Independent evidence first; bounded decision layer last.
     df = add_features(df, config)
     df = add_market_anomaly(df, config)
     df = add_price_model_anomaly(df, config)
@@ -175,8 +221,8 @@ def run_pipeline(
     df = add_duplicate_score(df, config)
     df = add_duplicate_graph_signals(df, config)
     df["prefilter_score"] = prefilter_score(df)
-    df, semantic_meta = apply_semantic(df, config)
-    meta["semantic"] = semantic_meta
+    df, decision_meta = apply_decisions(df, config)
+    meta["decision"] = decision_meta
     df = _finalize_scores(df, config)
 
     out_dir = Path(config.get("output.directory", "outputs/fatemi"))
