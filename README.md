@@ -172,6 +172,16 @@ divar-scanner calibrate \
 
 Question-specific temperature scaling changes probability sharpness, not the winning option.
 
+Evaluate the labelled bounded decisions on an untouched split:
+
+```bash
+divar-scanner evaluate-decisions \
+  --input outputs/fatemi/heldout_LABELLED.csv \
+  --output outputs/decision_evaluation.json
+```
+
+The evaluator reports accuracy together with NLL, multiclass Brier score, 10-bin ECE, abstention coverage, and selective accuracy on non-abstained rows.
+
 For deeper adaptation:
 
 ```bash
