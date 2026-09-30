@@ -659,6 +659,7 @@ def create_decision_engine(
             max_length=int(decision_config.get("max_length", 1024)),
             batch_size=int(decision_config.get("batch_size", 24)),
             temperatures=temperatures,
+            permutation_passes=int(decision_config.get("permutation_passes", 2)),
         )
         return engine, specs, temperatures
 
