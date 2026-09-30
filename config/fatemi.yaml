@@ -11,6 +11,7 @@ crawl:
   category: "apartment-rent"
   web_category_slug: "rent-apartment"
   district_slug: "fatemi"
+  search_page_url: "https://divar.ir/s/tehran/rent-apartment/fatemi"
   district_query: "فاطمی"
   district_aliases:
     - "فاطمی"
