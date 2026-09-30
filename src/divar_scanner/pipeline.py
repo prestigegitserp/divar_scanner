@@ -90,6 +90,16 @@ def _available_std(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
     return values.std(axis=1, skipna=True).fillna(0.0)
 
 
+def _numeric_series(
+    frame: pd.DataFrame,
+    column: str,
+    default: float = np.nan,
+) -> pd.Series:
+    if column not in frame:
+        return pd.Series(default, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce").astype(float)
+
+
 def _json_probability(frame: pd.DataFrame, column: str, key: str) -> pd.Series:
     def parse(value: Any) -> float:
         try:
@@ -117,17 +127,15 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     bait_graph = pd.to_numeric(out.get("duplicate_bait_score", 0), errors="coerce").fillna(0)
     out["duplicate_risk"] = np.maximum(nearest_dup, bait_graph)
 
-    evaluated = pd.to_numeric(
-        out.get("decision_evaluated", False), errors="coerce"
-    ).fillna(0).astype(bool)
-    decision_conf = pd.to_numeric(
-        out.get("decision_effective_confidence", np.nan), errors="coerce"
+    evaluated = _numeric_series(out, "decision_evaluated", 0.0).fillna(0).astype(bool)
+    decision_conf = _numeric_series(
+        out, "decision_effective_confidence", np.nan
     ).clip(0, 1)
     confidence_weight = decision_conf.where(evaluated, np.nan)
 
     # Channel 1 — data correctness. This is not fraud.
-    data_decision = pd.to_numeric(
-        out.get("decision_data_error_probability", np.nan), errors="coerce"
+    data_decision = _numeric_series(
+        out, "decision_data_error_probability", np.nan
     )
     integrity_error = (
         _json_probability(out, "decision_integrity_probs_json", "extraction_error").fillna(0)
@@ -165,8 +173,8 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     out["market_outlier_score"] = out["market_outlier_score"].clip(0, 1)
 
     # Channel 3 — misleading/bait. Deliberately receives no single-listing market score.
-    decision_bait = pd.to_numeric(
-        out.get("decision_bait_probability", np.nan), errors="coerce"
+    decision_bait = _numeric_series(
+        out, "decision_bait_probability", np.nan
     ).where(evaluated)
     disposition_bait = _json_probability(
         out, "decision_disposition_probs_json", "misleading_or_bait"
@@ -222,8 +230,8 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     sorted_channels = np.sort(channel_values, axis=1)
     strongest = sorted_channels[:, -1]
     second = sorted_channels[:, -2] if len(channels) > 1 else strongest
-    review_prob = pd.to_numeric(
-        out.get("decision_manual_review_probability", np.nan), errors="coerce"
+    review_prob = _numeric_series(
+        out, "decision_manual_review_probability", np.nan
     ).fillna(0.0)
     abstain = out.get("decision_abstain", pd.Series(False, index=out.index)).fillna(False).astype(bool)
     abstain_uplift = abstain.astype(float) * float(s.get("abstain_review_uplift", 0.08))
