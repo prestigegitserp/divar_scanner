@@ -46,7 +46,8 @@ semantic:
     - "groq"
     - "cerebras"
     - "gemini"
-    - "cohere"\n    - "openrouter"
+    - "cohere"
+    - "openrouter"
     - "huggingface"
     - "custom-openai-compatible"
   ensemble_max_providers: 1
@@ -55,9 +56,14 @@ semantic:
     groq: "openai/gpt-oss-20b"
     cerebras: "gpt-oss-120b"
     gemini: "gemini-3.8-flash"
-    cohere: "c4ai-aya-expanse-32b"\n    openrouter: "openrouter/free"
+    cohere: "c4ai-aya-expanse-32b"
+    openrouter: "openrouter/free"
     huggingface: "openai/gpt-oss-120b:fastest"
+    local_qwen_small: "Qwen/Qwen3-1.7B"
+    local_qwen: "Qwen/Qwen3-4B"
+    local_aya: "CohereLabs/aya-expanse-8b"
   top_k: 80
+  local_top_k: 24
   min_prefilter_score: 0.28
   timeout_seconds: 30
   retries: 2
