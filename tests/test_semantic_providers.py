@@ -4,6 +4,7 @@ import numpy as np
 
 from divar_scanner.decision import (
     compile_requests,
+    resolve_model_specs,
     typed_answer_from_evidence,
 )
 
@@ -71,3 +72,39 @@ def test_compile_requests_never_invents_candidates():
     }
     compiled, _ = compile_requests([("state", questions)])
     assert [x.key for x in compiled] == ["a", "b"]
+
+
+def test_persian_specialist_registry_has_explicit_label_order():
+    spec = resolve_model_specs("parsbert-parsinlu", {})[0]
+    assert spec.model_name == "persiannlp/parsbert-base-parsinlu-entailment"
+    assert spec.forced_label_indices == (0, 2, 1)
+    assert "NC" in spec.license
+
+
+def test_persian_ensemble_is_encoder_only_pair():
+    specs = resolve_model_specs(
+        "persian-ensemble",
+        {"ensemble_backends": ["mdeberta-nli", "parsbert-parsinlu"]},
+    )
+    assert [s.backend for s in specs] == ["mdeberta-nli", "parsbert-parsinlu"]
+    assert all("Qwen" not in s.model_name for s in specs)
+
+
+def test_model_disagreement_reduces_confidence():
+    q = {
+        "type": "choice",
+        "instructions": "کدام؟",
+        "criteria": {"a": "الف", "b": "ب"},
+    }
+    clean = [
+        {"key": "a", "entailment": 0.90, "neutral": 0.03, "contradiction": 0.07, "model_disagreement": 0.0},
+        {"key": "b", "entailment": 0.07, "neutral": 0.03, "contradiction": 0.90, "model_disagreement": 0.0},
+    ]
+    disagree = [
+        {**clean[0], "model_disagreement": 2.0},
+        {**clean[1], "model_disagreement": 2.0},
+    ]
+    assert (
+        typed_answer_from_evidence(q, disagree)["confidence"]
+        < typed_answer_from_evidence(q, clean)["confidence"]
+    )
