@@ -89,6 +89,41 @@ The first cells:
 
 For a first run use `MAX_LISTINGS=100` or `200`.
 
+## Zero-payment / zero-key local mode
+
+If you cannot or do not want to use a paid API, use local inference in Colab:
+
+```text
+SEMANTIC_PROVIDER = local-qwen-small   # Qwen3-1.7B, lightest
+SEMANTIC_PROVIDER = local-qwen         # Qwen3-4B, recommended
+SEMANTIC_PROVIDER = local-aya          # Aya Expanse 8B, explicitly Persian-capable
+```
+
+No API key, billing account, PayPal, or card is used. The model weights are loaded into the notebook runtime and inference happens there.
+
+For `local-qwen` and `local-aya`, select **Runtime → Change runtime type → GPU** in Colab. The notebook installs the optional local stack only after a local provider is selected:
+
+```bash
+python -m pip install -e '.[local]'
+```
+
+The local stack uses 4-bit NF4 quantization on CUDA. If no GPU is available, `local-qwen-small` has a CPU fallback, but it is much slower.
+
+Public model defaults:
+
+- `Qwen/Qwen3-1.7B`
+- `Qwen/Qwen3-4B`
+- `CohereLabs/aya-expanse-8b`
+
+You can also point to model files you already have locally:
+
+```bash
+export SEMANTIC_PROVIDER=local-qwen
+export LOCAL_MODEL_ID=/content/my_model_folder
+```
+
+This avoids any inference-provider dependency entirely.
+
 ## Semantic provider support
 
 External semantic inference is optional. The statistical/graph pipeline runs without any API key.
