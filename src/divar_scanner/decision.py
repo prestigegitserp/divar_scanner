@@ -4,6 +4,7 @@ import json
 import math
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
@@ -451,7 +452,9 @@ class NLIDecisionEngine:
             request_index, qid = route
             question = question_lookup[route]
             qtype = str(question.get("type", "")).lower()
-            temperature = float(self.temperatures.get(qtype, 1.0))
+            temperature = float(
+                self.temperatures.get(qid, self.temperatures.get(qtype, 1.0))
+            )
             outputs[request_index][qid] = typed_answer_from_evidence(
                 question,
                 rows,
@@ -578,7 +581,9 @@ class EnsembleNLIDecisionEngine:
             outputs[request_index][qid] = typed_answer_from_evidence(
                 question,
                 rows,
-                temperature=float(self.temperatures.get(qtype, 1.0)),
+                temperature=float(
+                    self.temperatures.get(qid, self.temperatures.get(qtype, 1.0))
+                ),
             )
         return outputs
 
@@ -588,6 +593,64 @@ class EnsembleNLIDecisionEngine:
         questions: dict[str, dict[str, Any]],
     ) -> dict[str, dict[str, Any]]:
         return self.decide_many([(state, questions)])[0]
+
+
+
+def load_decision_temperatures(decision_config: dict[str, Any]) -> dict[str, float]:
+    temperatures = {
+        str(k): float(v)
+        for k, v in dict(decision_config.get("temperatures", {}) or {}).items()
+    }
+    calibration_file = decision_config.get("calibration_file")
+    if calibration_file:
+        path = Path(str(calibration_file))
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            calibrated = payload.get("temperatures", {})
+            if isinstance(calibrated, dict):
+                temperatures.update(
+                    {
+                        str(k): float(v)
+                        for k, v in calibrated.items()
+                        if isinstance(v, (int, float))
+                    }
+                )
+    return temperatures
+
+
+def create_decision_engine(
+    decision_config: dict[str, Any],
+    *,
+    backend_override: str | None = None,
+):
+    backend = str(
+        backend_override
+        or os.getenv("DECISION_BACKEND")
+        or decision_config.get("backend", "mdeberta-nli")
+    ).lower()
+    specs = resolve_model_specs(backend, decision_config)
+    temperatures = load_decision_temperatures(decision_config)
+    common_engine_args = {
+        "device": str(decision_config.get("device", "auto")),
+        "max_length": int(decision_config.get("max_length", 512)),
+        "batch_size": int(decision_config.get("batch_size", 24)),
+        "temperatures": temperatures,
+    }
+    if len(specs) == 1:
+        spec = specs[0]
+        engine = NLIDecisionEngine(
+            model_name=spec.model_name,
+            backend_name=spec.backend,
+            forced_label_indices=spec.forced_label_indices,
+            **common_engine_args,
+        )
+    else:
+        engine = EnsembleNLIDecisionEngine(
+            specs,
+            model_weights=decision_config.get("ensemble_weights", {}),
+            **common_engine_args,
+        )
+    return engine, specs, temperatures
 
 
 def _num(row: pd.Series, key: str) -> float | None:
@@ -761,26 +824,10 @@ def apply_decisions(
             "reason": "no rows passed decision prefilter",
         }
 
-    common_engine_args = {
-        "device": str(d.get("device", "auto")),
-        "max_length": int(d.get("max_length", 512)),
-        "batch_size": int(d.get("batch_size", 24)),
-        "temperatures": d.get("temperatures", {}),
-    }
-    if len(specs) == 1:
-        spec = specs[0]
-        engine = NLIDecisionEngine(
-            model_name=spec.model_name,
-            backend_name=spec.backend,
-            forced_label_indices=spec.forced_label_indices,
-            **common_engine_args,
-        )
-    else:
-        engine = EnsembleNLIDecisionEngine(
-            specs,
-            model_weights=d.get("ensemble_weights", {}),
-            **common_engine_args,
-        )
+    engine, specs, effective_temperatures = create_decision_engine(
+        d,
+        backend_override=backend,
+    )
 
     requests = [
         (build_listing_state(row), listing_questions())
@@ -837,6 +884,8 @@ def apply_decisions(
         ],
         "evaluated": int(out["decision_evaluated"].sum()),
         "candidate_count": int(len(candidates)),
+        "temperatures": effective_temperatures,
+        "calibration_file": d.get("calibration_file"),
         "probability_note": (
             "These are NLI-derived bounded probabilities, not TypeSafe Jev's proprietary RLCD-calibrated probabilities. "
             "For ensembles, model evidence log-odds are fused before the option softmax. "
