@@ -1,85 +1,58 @@
-# Non-generative decision model options
+# Decision model options — v0.4
 
-All models below are used as **sequence classifiers**, not text generators.
+## Primary — Laya Multilingual
 
-## Default — mDeBERTa multilingual NLI
+Backend: `laya-multilingual`
+Model: `convaiinnovations/laya`, subfolder `multilingual`
+License: Apache-2.0
 
-Backend: `mdeberta-nli`  
-Model: `MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7`  
+Why primary:
+
+- native non-autoregressive typed-decision model;
+- multilingual encoder rather than autoregressive decoder;
+- dynamic caller-supplied options;
+- one-pass bounded probability output;
+- practical on Colab;
+- closest open fit to the observable Jev/System-One contract.
+
+The project wraps Laya with opaque-choice transport, option-permutation pooling, target-domain temperature calibration, cross-question coherence checks, and abstention.
+
+## Baseline — mDeBERTa multilingual NLI
+
+Backend: `mdeberta-nli`
+Model: `MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7`
 License: MIT
 
-Why it is the default:
-
-- encoder-style NLI / sequence classification;
-- Persian (`fa`) is explicitly included in the multilingual NLI training set;
-- entailment / neutral / contradiction map naturally to bounded Jev-style options;
-- compact enough for Colab;
-- permissive license.
+This is a strong non-generative multilingual NLI baseline, including Persian in its multilingual training. It is not a native System-One decision head; the repo constructs bounded options from entailment/contradiction evidence.
 
 ## Persian specialist — ParsBERT ParsiNLU
 
-Backend: `parsbert-parsinlu`  
-Model: `persiannlp/parsbert-base-parsinlu-entailment`  
+Backend: `parsbert-parsinlu`
+Model: `persiannlp/parsbert-base-parsinlu-entailment`
 License: CC-BY-NC-SA-4.0
 
-The model card explicitly describes Persian textual entailment and gives the label order:
+Persian textual-entailment baseline. Useful for scientific comparison, not the default System-One runtime.
 
-```text
-entails, contradicts, neutral
-```
-
-The project registry therefore supplies an explicit index map instead of guessing from opaque `LABEL_0` metadata.
-
-Use this backend for non-commercial/public-interest evaluation when the model license is compatible with your deployment.
-
-## Alternative Persian model — multilingual BERT ParsiNLU
-
-Backend: `mbert-parsinlu`  
-Model: `persiannlp/mbert-base-parsinlu-entailment`  
-License: CC-BY-NC-SA-4.0
-
-Useful as another Persian-domain NLI reference.
-
-## Evidence ensemble
+## Persian evidence ensemble
 
 Backend: `persian-ensemble`
 
-Default members:
+Fuses candidate evidence from mDeBERTa and ParsBERT before one closed-set softmax. It provides a disagreement signal but remains an NLI baseline.
 
-```text
-55% mdeberta-nli
-45% parsbert-parsinlu
-```
+## OpenJev
 
-The ensemble does **not** average already-normalized choice probabilities. For candidate `i`, each model first contributes:
+Architecturally very relevant: typed non-generative decisions and closed probabilities. Current public checkpoints use a Qwen-derived backbone and are much larger, so they are excluded as the primary runtime under this project's stricter no-autoregressive-LLM-backbone requirement.
 
-```text
-e_(m,i) = log P_m(entail_i) - log P_m(contradict_i)
-```
+## Lev
 
-Then the engine fuses evidence:
+Relevant System-One research, but the public model is built on a Qwen decoder backbone. Not selected for the same reason.
 
-```text
-e_i = sum_m w_m * e_(m,i)
-P(option_i) = softmax(e_i / T)
-```
+## OpenDecider
 
-This preserves one closed-set normalization step over the caller-supplied options.
+Compact and promising, but current public evaluation coverage is much more English-centric than the Persian housing target. It remains a future comparison candidate.
 
-The weighted standard deviation of model log-odds becomes a disagreement signal and reduces decision confidence.
+## Probability semantics
 
-## Why OpenJev is not the default
+Even Laya's native probability should not be treated as calibrated Tehran-housing truth out of the box. v0.4 records raw pooled bounded probabilities, option-order stability and coherence, then supports question-specific target-domain temperature scaling.
 
-`AlexWortega/openjev` is directly relevant: it exposes a Jev-like typed-decision pattern using an NLI cross-encoder and no generation at inference. It is an excellent architectural reference and benchmark.
-
-Its current checkpoints, however, use Qwen3.5-derived sequence-classification backbones. This project intentionally uses encoder NLI backbones as the default because the design requirement is **non-LLM as well as non-generative**.
-
-## Calibration
-
-Neither the mDeBERTa nor ParsiNLU model was trained specifically to output calibrated probabilities for Tehran rental-risk decisions.
-
-Therefore:
-
-- raw option softmax = bounded relative decision score;
-- question-specific temperature scaling = calibration layer;
-- real reliability claims require held-out human labels from the target domain.
+Final reliability claims require held-out human labels.
