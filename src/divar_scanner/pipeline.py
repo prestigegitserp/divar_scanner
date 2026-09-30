@@ -235,9 +235,18 @@ def run_pipeline(
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
         paths["csv"] = str(csv_path)
         review_path = out_dir / f"review_queue_{stamp}.csv"
-        df[df["risk_band"].isin(["review", "high"])].to_csv(
-            review_path, index=False, encoding="utf-8-sig"
-        )
+        review_df = df[df["risk_band"].isin(["review", "high"])].copy()
+        for label_col in (
+            "human_disposition",
+            "human_bait",
+            "human_data_error",
+            "human_manual_review",
+            "human_consistency_level",
+            "human_notes",
+        ):
+            if label_col not in review_df:
+                review_df[label_col] = ""
+        review_df.to_csv(review_path, index=False, encoding="utf-8-sig")
         paths["review_csv"] = str(review_path)
 
     if bool(config.get("output.write_parquet", True)):
