@@ -24,6 +24,7 @@ def collect() -> dict:
         "torch",
         "transformers",
         "sentencepiece",
+        "laya",
     ):
         try:
             mod = importlib.import_module(name)
@@ -34,7 +35,7 @@ def collect() -> dict:
     package_path = str(Path(divar_scanner.__file__).resolve())
     decision_ready = all(
         not str(packages[name]).startswith("NOT_AVAILABLE")
-        for name in ("torch", "transformers", "sentencepiece")
+        for name in ("torch", "transformers", "sentencepiece", "laya")
     )
     gpu = {}
     if decision_ready:
