@@ -12,10 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_repository_fatemi_config_parses_cleanly():
     cfg = load_config(ROOT / "config" / "fatemi.yaml")
     assert cfg.get("decision.backend") == "mdeberta-nli"
-    assert (
-        cfg.get("decision.model")
-        == "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
-    )
+    assert cfg.get("decision.model_override") is None
+    assert cfg.get("decision.ensemble_backends") == [
+        "mdeberta-nli",
+        "parsbert-parsinlu",
+    ]
     assert cfg.get("features.rent_to_deposit_multipliers") == [25.0, 30.0, 35.0]
     assert cfg.get("semantic") is None
 
