@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_repository_fatemi_config_parses_cleanly():
     cfg = load_config(ROOT / "config" / "fatemi.yaml")
+    assert cfg.get("crawl.transport") == "web"
+    assert cfg.get("crawl.district_slug") == "fatemi"
+    assert cfg.get("crawl.web_category_slug") == "rent-apartment"
     assert cfg.get("decision.backend") == "laya-multilingual"
     assert cfg.get("decision.model_override") is None
     assert cfg.get("decision.permutation_passes") == 2
