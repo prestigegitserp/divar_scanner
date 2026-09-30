@@ -53,3 +53,39 @@ jobs:
           from divar_scanner.pipeline import run_pipeline
           print("Colab-style import OK:", run_pipeline.__name__)
           PY
+
+  decision-runtime-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[decision]'
+      - name: Import Laya runtime without downloading model weights
+        run: |
+          python - <<'PY'
+          import laya
+          from divar_scanner.decision import resolve_model_specs
+          from divar_scanner.laya_backend import LayaDecisionEngine, adapt_questions_for_laya
+
+          spec = resolve_model_specs("laya-multilingual", {})[0]
+          assert spec.engine == "laya"
+          assert spec.model_name == "convaiinnovations/laya"
+
+          questions = {
+              "q": {
+                  "type": "noul",
+                  "instructions": "آیا شواهد کافی است؟",
+                  "criteria": {"no": "خیر", "yes": "بله"},
+              }
+          }
+          adapted, meta = adapt_questions_for_laya(questions)
+          assert adapted["q"]["type"] == "choice"
+          assert meta["q"]["type"] == "noul"
+          engine = LayaDecisionEngine()
+          assert engine.backend_name == "laya-multilingual"
+          print("Laya import/runtime adapter OK:", getattr(laya, "__version__", "unknown"))
+          PY
