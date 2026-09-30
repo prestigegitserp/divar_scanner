@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .calibration import calibrate_file
 from .config import load_config
 from .pipeline import run_pipeline
 
@@ -60,11 +61,28 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = sub.add_parser("analyze", help="analyze an existing normalized CSV/Parquet file")
     _add_common_args(analyze)
     analyze.add_argument("--input", required=True)
+
+    calibrate = sub.add_parser(
+        "calibrate",
+        help="fit decision temperatures from a human-labelled review CSV/Parquet",
+    )
+    calibrate.add_argument("--input", required=True)
+    calibrate.add_argument("--output", default="config/fatemi_calibration.json")
+    calibrate.add_argument("--min-samples", type=int, default=12)
     return p
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.command == "calibrate":
+        result = calibrate_file(
+            args.input,
+            args.output,
+            min_samples=args.min_samples,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
     cfg = _patch_config(
         args.config,
         getattr(args, "max_listings", None),
