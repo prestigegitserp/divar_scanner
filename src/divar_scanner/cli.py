@@ -43,7 +43,13 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--decision-backend",
         default=None,
-        choices=["mdeberta-nli"],
+        choices=[
+            "laya-multilingual",
+            "mdeberta-nli",
+            "parsbert-parsinlu",
+            "mbert-parsinlu",
+            "persian-ensemble",
+        ],
         help="bounded non-generative decision backend",
     )
 
