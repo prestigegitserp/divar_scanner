@@ -80,7 +80,7 @@ def resolve_model_specs(
 
     spec = NLI_MODEL_REGISTRY[backend]
     # Allow an explicit model override only for a single backend.
-    configured_model = decision_config.get("model")
+    configured_model = decision_config.get("model_override")
     if configured_model and backend == str(decision_config.get("backend", backend)).lower():
         spec = NLIModelSpec(
             backend=spec.backend,
@@ -367,10 +367,12 @@ class NLIDecisionEngine:
             device = self.requested_device
 
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True)
-        dtype = torch.float16 if device.startswith("cuda") else torch.float32
+        # Keep float32 for maximum NLI checkpoint compatibility. In particular,
+        # the upstream mDeBERTa model card warns about FP16 support; the base model
+        # is small enough that float32 remains Colab-friendly.
         model = AutoModelForSequenceClassification.from_pretrained(
             self.model_name,
-            torch_dtype=dtype,
+            torch_dtype=torch.float32,
             low_cpu_mem_usage=True,
         )
         model.to(device)
