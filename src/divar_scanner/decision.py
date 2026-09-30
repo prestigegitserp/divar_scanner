@@ -15,6 +15,82 @@ from .config import Config
 DEFAULT_NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
 
 
+@dataclass(frozen=True)
+class NLIModelSpec:
+    backend: str
+    model_name: str
+    license: str
+    note: str
+    forced_label_indices: tuple[int, int, int] | None = None  # entail, neutral, contradiction
+
+
+NLI_MODEL_REGISTRY: dict[str, NLIModelSpec] = {
+    "mdeberta-nli": NLIModelSpec(
+        backend="mdeberta-nli",
+        model_name=DEFAULT_NLI_MODEL,
+        license="MIT",
+        note="Multilingual encoder NLI; permissive default.",
+    ),
+    "parsbert-parsinlu": NLIModelSpec(
+        backend="parsbert-parsinlu",
+        model_name="persiannlp/parsbert-base-parsinlu-entailment",
+        license="CC-BY-NC-SA-4.0",
+        note="Persian-specialist ParsiNLU NLI classifier; non-commercial/share-alike license.",
+        forced_label_indices=(0, 2, 1),
+    ),
+    "mbert-parsinlu": NLIModelSpec(
+        backend="mbert-parsinlu",
+        model_name="persiannlp/mbert-base-parsinlu-entailment",
+        license="CC-BY-NC-SA-4.0",
+        note="Multilingual BERT fine-tuned on Persian ParsiNLU entailment.",
+        forced_label_indices=(0, 2, 1),
+    ),
+}
+
+
+def resolve_model_specs(
+    backend: str,
+    decision_config: dict[str, Any],
+) -> list[NLIModelSpec]:
+    backend = backend.lower().strip()
+    if backend in {"nli", "mdeberta"}:
+        backend = "mdeberta-nli"
+
+    if backend == "persian-ensemble":
+        names = decision_config.get(
+            "ensemble_backends",
+            ["mdeberta-nli", "parsbert-parsinlu"],
+        )
+        if not isinstance(names, list) or not names:
+            raise ValueError("decision.ensemble_backends must be a non-empty list")
+        specs = []
+        for name in names:
+            key = str(name).lower().strip()
+            if key not in NLI_MODEL_REGISTRY:
+                raise ValueError(f"Unknown ensemble NLI backend: {key!r}")
+            specs.append(NLI_MODEL_REGISTRY[key])
+        return specs
+
+    if backend not in NLI_MODEL_REGISTRY:
+        raise ValueError(
+            f"Unsupported non-generative decision backend {backend!r}. "
+            f"Choose from {sorted(NLI_MODEL_REGISTRY)} or 'persian-ensemble'."
+        )
+
+    spec = NLI_MODEL_REGISTRY[backend]
+    # Allow an explicit model override only for a single backend.
+    configured_model = decision_config.get("model")
+    if configured_model and backend == str(decision_config.get("backend", backend)).lower():
+        spec = NLIModelSpec(
+            backend=spec.backend,
+            model_name=str(configured_model),
+            license=spec.license,
+            note=spec.note,
+            forced_label_indices=spec.forced_label_indices,
+        )
+    return [spec]
+
+
 def _softmax(values: Iterable[float], temperature: float = 1.0) -> np.ndarray:
     x = np.asarray(list(values), dtype=float)
     if x.size == 0:
@@ -58,9 +134,12 @@ def typed_answer_from_evidence(
 
     evidence = []
     for row in candidate_rows:
-        p_ent = float(np.clip(row["entailment"], 1e-9, 1.0))
-        p_con = float(np.clip(row["contradiction"], 1e-9, 1.0))
-        evidence.append(math.log(p_ent) - math.log(p_con))
+        if "evidence_log_odds" in row:
+            evidence.append(float(row["evidence_log_odds"]))
+        else:
+            p_ent = float(np.clip(row["entailment"], 1e-9, 1.0))
+            p_con = float(np.clip(row["contradiction"], 1e-9, 1.0))
+            evidence.append(math.log(p_ent) - math.log(p_con))
 
     probs = _softmax(evidence, temperature=temperature)
     keys = [str(r["key"]) for r in candidate_rows]
@@ -70,7 +149,25 @@ def typed_answer_from_evidence(
     )
     concentration = _normalized_entropy_confidence(probs)
     # Neutral NLI mass means "the state does not decide this hypothesis"; reduce certainty.
-    confidence = float(np.clip(concentration * (1.0 - 0.65 * neutral_mass), 0.0, 1.0))
+    disagreement = float(
+        np.sum(
+            probs
+            * np.asarray(
+                [float(r.get("model_disagreement", 0.0)) for r in candidate_rows],
+                dtype=float,
+            )
+        )
+    )
+    disagreement_penalty = float(np.exp(-0.60 * max(disagreement, 0.0)))
+    confidence = float(
+        np.clip(
+            concentration
+            * (1.0 - 0.65 * neutral_mass)
+            * disagreement_penalty,
+            0.0,
+            1.0,
+        )
+    )
 
     raw_nli = {
         str(r["key"]): {
@@ -78,6 +175,8 @@ def typed_answer_from_evidence(
             "neutral": float(r["neutral"]),
             "contradiction": float(r["contradiction"]),
             "evidence_log_odds": float(e),
+            "model_disagreement": float(r.get("model_disagreement", 0.0)),
+            "per_model": r.get("per_model", {}),
         }
         for r, e in zip(candidate_rows, evidence)
     }
@@ -92,6 +191,7 @@ def typed_answer_from_evidence(
             "confidence": confidence,
             "diagnostics": {
                 "neutral_mass": neutral_mass,
+                "model_disagreement": disagreement,
                 "probability_method": "softmax_over_nli_entailment_vs_contradiction_log_odds",
                 "raw_nli": raw_nli,
             },
@@ -107,6 +207,7 @@ def typed_answer_from_evidence(
             "diagnostics": {
                 "decision_confidence": confidence,
                 "neutral_mass": neutral_mass,
+                "model_disagreement": disagreement,
                 "probability_method": "two_candidate_nli_softmax",
                 "raw_nli": raw_nli,
             },
@@ -125,6 +226,7 @@ def typed_answer_from_evidence(
             "confidence": confidence,
             "diagnostics": {
                 "neutral_mass": neutral_mass,
+                "model_disagreement": disagreement,
                 "probability_method": "expected_level_over_nli_option_distribution",
                 "raw_nli": raw_nli,
             },
@@ -222,12 +324,16 @@ class NLIDecisionEngine:
         self,
         model_name: str = DEFAULT_NLI_MODEL,
         *,
+        backend_name: str = "mdeberta-nli",
+        forced_label_indices: tuple[int, int, int] | None = None,
         device: str = "auto",
         max_length: int = 512,
         batch_size: int = 24,
         temperatures: dict[str, float] | None = None,
     ):
         self.model_name = model_name
+        self._backend_name = backend_name
+        self.forced_label_indices = forced_label_indices
         self.requested_device = device
         self.max_length = int(max_length)
         self.batch_size = max(1, int(batch_size))
@@ -240,7 +346,7 @@ class NLIDecisionEngine:
 
     @property
     def backend_name(self) -> str:
-        return "mdeberta-nli"
+        return self._backend_name
 
     def _load(self) -> None:
         if self._model is not None:
@@ -269,16 +375,20 @@ class NLIDecisionEngine:
         model.to(device)
         model.eval()
 
-        id2label = {
-            int(k): str(v).lower()
-            for k, v in getattr(model.config, "id2label", {}).items()
-        }
-        entail = next((i for i, v in id2label.items() if "entail" in v), None)
-        neutral = next((i for i, v in id2label.items() if "neutral" in v), None)
-        contradiction = next((i for i, v in id2label.items() if "contrad" in v), None)
-        if None in (entail, neutral, contradiction):
-            # Upstream mDeBERTa NLI checkpoints use this documented ordering.
-            entail, neutral, contradiction = 0, 1, 2
+        if self.forced_label_indices is not None:
+            entail, neutral, contradiction = self.forced_label_indices
+        else:
+            id2label = {
+                int(k): str(v).lower()
+                for k, v in getattr(model.config, "id2label", {}).items()
+            }
+            entail = next((i for i, v in id2label.items() if "entail" in v), None)
+            neutral = next((i for i, v in id2label.items() if "neutral" in v), None)
+            contradiction = next((i for i, v in id2label.items() if "contrad" in v), None)
+            if None in (entail, neutral, contradiction):
+                # mDeBERTa's documented ordering. Other checkpoints with opaque LABEL_* IDs
+                # must provide forced_label_indices through the model registry.
+                entail, neutral, contradiction = 0, 1, 2
 
         self._torch = torch
         self._tokenizer = tokenizer
@@ -346,6 +456,129 @@ class NLIDecisionEngine:
                 question,
                 rows,
                 temperature=temperature,
+            )
+        return outputs
+
+    def decide(
+        self,
+        state: str,
+        questions: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        return self.decide_many([(state, questions)])[0]
+
+
+
+class EnsembleNLIDecisionEngine:
+    """Fuse several non-generative NLI encoders before the bounded option softmax."""
+
+    def __init__(
+        self,
+        specs: list[NLIModelSpec],
+        *,
+        device: str = "auto",
+        max_length: int = 512,
+        batch_size: int = 24,
+        temperatures: dict[str, float] | None = None,
+        model_weights: dict[str, float] | None = None,
+    ):
+        if len(specs) < 2:
+            raise ValueError("EnsembleNLIDecisionEngine requires at least two models")
+        self.specs = specs
+        self.temperatures = dict(temperatures or {})
+        configured_weights = dict(model_weights or {})
+        raw_weights = np.asarray(
+            [float(configured_weights.get(spec.backend, 1.0)) for spec in specs],
+            dtype=float,
+        )
+        raw_weights = np.clip(raw_weights, 0.0, None)
+        if raw_weights.sum() <= 0:
+            raw_weights[:] = 1.0
+        self.weights = raw_weights / raw_weights.sum()
+        self.engines = [
+            NLIDecisionEngine(
+                model_name=spec.model_name,
+                backend_name=spec.backend,
+                forced_label_indices=spec.forced_label_indices,
+                device=device,
+                max_length=max_length,
+                batch_size=batch_size,
+                temperatures=self.temperatures,
+            )
+            for spec in specs
+        ]
+
+    @property
+    def backend_name(self) -> str:
+        return "persian-ensemble"
+
+    @property
+    def model_name(self) -> str:
+        return " + ".join(spec.model_name for spec in self.specs)
+
+    def decide_many(
+        self,
+        requests: list[tuple[str, dict[str, dict[str, Any]]]],
+    ) -> list[dict[str, dict[str, Any]]]:
+        if not requests:
+            return []
+
+        compiled, question_lookup = compile_requests(requests)
+        per_model_scores = [engine._score_pairs(compiled) for engine in self.engines]
+        grouped: dict[tuple[int, str], list[dict[str, Any]]] = {}
+
+        for pair_index, item in enumerate(compiled):
+            model_rows = [scores[pair_index] for scores in per_model_scores]
+            log_odds = np.asarray(
+                [
+                    math.log(max(r["entailment"], 1e-9))
+                    - math.log(max(r["contradiction"], 1e-9))
+                    for r in model_rows
+                ],
+                dtype=float,
+            )
+            fused_log_odds = float(np.dot(self.weights, log_odds))
+            neutral = float(
+                np.dot(
+                    self.weights,
+                    np.asarray([r["neutral"] for r in model_rows], dtype=float),
+                )
+            )
+            # Preserve the fused entail-vs-contradict ratio while allocating the
+            # remaining mass after neutral.
+            ent_share = 1.0 / (1.0 + math.exp(-np.clip(fused_log_odds, -30, 30)))
+            entailment = (1.0 - neutral) * ent_share
+            contradiction = (1.0 - neutral) * (1.0 - ent_share)
+            disagreement = float(np.sqrt(np.dot(self.weights, (log_odds - fused_log_odds) ** 2)))
+            per_model = {
+                spec.backend: {
+                    "entailment": float(row["entailment"]),
+                    "neutral": float(row["neutral"]),
+                    "contradiction": float(row["contradiction"]),
+                    "evidence_log_odds": float(lo),
+                }
+                for spec, row, lo in zip(self.specs, model_rows, log_odds)
+            }
+            grouped.setdefault((item.request_index, item.question_id), []).append(
+                {
+                    "key": item.key,
+                    "entailment": entailment,
+                    "neutral": neutral,
+                    "contradiction": contradiction,
+                    "evidence_log_odds": fused_log_odds,
+                    "model_disagreement": disagreement,
+                    "per_model": per_model,
+                }
+            )
+
+        outputs: list[dict[str, dict[str, Any]]] = [dict() for _ in requests]
+        for route, rows in grouped.items():
+            request_index, qid = route
+            question = question_lookup[route]
+            qtype = str(question.get("type", "")).lower()
+            outputs[request_index][qid] = typed_answer_from_evidence(
+                question,
+                rows,
+                temperature=float(self.temperatures.get(qtype, 1.0)),
             )
         return outputs
 
@@ -509,12 +742,10 @@ def apply_decisions(
             "reason": "decision layer disabled",
         }
 
-    backend = str(os.getenv("DECISION_BACKEND") or d.get("backend", "mdeberta-nli")).lower()
-    if backend not in {"mdeberta-nli", "nli", "mdeberta"}:
-        raise ValueError(
-            f"Unsupported non-generative decision backend {backend!r}. "
-            "Use 'mdeberta-nli'."
-        )
+    backend = str(
+        os.getenv("DECISION_BACKEND") or d.get("backend", "mdeberta-nli")
+    ).lower()
+    specs = resolve_model_specs(backend, d)
 
     min_prefilter = float(d.get("min_prefilter_score", 0.24))
     top_k = min(int(d.get("top_k", 60)), len(out))
@@ -524,19 +755,32 @@ def apply_decisions(
     if candidates.empty:
         return out, {
             "enabled": True,
-            "backend": "mdeberta-nli",
-            "model": str(d.get("model", DEFAULT_NLI_MODEL)),
+            "backend": backend,
+            "model": " + ".join(spec.model_name for spec in specs),
             "evaluated": 0,
             "reason": "no rows passed decision prefilter",
         }
 
-    engine = NLIDecisionEngine(
-        model_name=str(d.get("model", DEFAULT_NLI_MODEL)),
-        device=str(d.get("device", "auto")),
-        max_length=int(d.get("max_length", 512)),
-        batch_size=int(d.get("batch_size", 24)),
-        temperatures=d.get("temperatures", {}),
-    )
+    common_engine_args = {
+        "device": str(d.get("device", "auto")),
+        "max_length": int(d.get("max_length", 512)),
+        "batch_size": int(d.get("batch_size", 24)),
+        "temperatures": d.get("temperatures", {}),
+    }
+    if len(specs) == 1:
+        spec = specs[0]
+        engine = NLIDecisionEngine(
+            model_name=spec.model_name,
+            backend_name=spec.backend,
+            forced_label_indices=spec.forced_label_indices,
+            **common_engine_args,
+        )
+    else:
+        engine = EnsembleNLIDecisionEngine(
+            specs,
+            model_weights=d.get("ensemble_weights", {}),
+            **common_engine_args,
+        )
 
     requests = [
         (build_listing_state(row), listing_questions())
@@ -582,10 +826,20 @@ def apply_decisions(
         "enabled": True,
         "backend": engine.backend_name,
         "model": engine.model_name,
+        "models": [
+            {
+                "backend": spec.backend,
+                "model": spec.model_name,
+                "license": spec.license,
+                "note": spec.note,
+            }
+            for spec in specs
+        ],
         "evaluated": int(out["decision_evaluated"].sum()),
         "candidate_count": int(len(candidates)),
         "probability_note": (
-            "These are NLI-derived softmax probabilities, not TypeSafe Jev's proprietary RLCD-calibrated probabilities. "
+            "These are NLI-derived bounded probabilities, not TypeSafe Jev's proprietary RLCD-calibrated probabilities. "
+            "For ensembles, model evidence log-odds are fused before the option softmax. "
             "Tune temperatures on labelled Persian data before treating thresholds as calibrated."
         ),
     }
