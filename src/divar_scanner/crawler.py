@@ -9,23 +9,31 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import quote
 
 import requests
 from tqdm.auto import tqdm
 
 from .config import Config
 
-DIVAR_BASE = "https://api.divar.ir"
-CITIES_URL = f"{DIVAR_BASE}/v8/places/cities"
-DISTRICTS_URL = f"{DIVAR_BASE}/v8/places/cities/{{city_id}}/districts"
-SEARCH_URL = f"{DIVAR_BASE}/v8/postlist/w/search"
-DETAIL_URL = f"{DIVAR_BASE}/v8/posts-v2/web/{{token}}"
+DIVAR_API_BASE = "https://api.divar.ir"
+DIVAR_WEB_BASE = "https://divar.ir"
+CITIES_URL = f"{DIVAR_API_BASE}/v8/places/cities"
+DISTRICTS_URL = f"{DIVAR_API_BASE}/v8/places/cities/{{city_id}}/districts"
+SEARCH_URL = f"{DIVAR_API_BASE}/v8/postlist/w/search"
+DETAIL_URL = f"{DIVAR_API_BASE}/v8/posts-v2/web/{{token}}"
 
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?98|0)?9\d{9}(?!\d)")
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+_SLUG_RE = re.compile(r"^[a-z0-9-]+$")
 
 
 class DivarBlockedError(RuntimeError):
+    pass
+
+
+class DivarTransportError(RuntimeError):
     pass
 
 
@@ -93,23 +101,174 @@ def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _nested(obj: Any, *keys: str) -> Any:
+    cur = obj
+    for key in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _extract_preloaded_state(document: str) -> dict[str, Any]:
+    marker = "window.__PRELOADED_STATE__"
+    pos = document.find(marker)
+    if pos < 0:
+        raise ValueError("Divar preloaded state was not found in the server-rendered page")
+    eq = document.find("=", pos + len(marker))
+    if eq < 0:
+        raise ValueError("Divar preloaded-state assignment is malformed")
+    source = document[eq + 1 :].lstrip()
+    try:
+        value, _ = json.JSONDecoder().raw_decode(source)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Divar preloaded state is not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("Divar preloaded state has an unexpected shape")
+    return value
+
+
+def _token_from_url(raw_url: str) -> str:
+    path = str(raw_url or "").split("?", 1)[0].rstrip("/")
+    token = path.rsplit("/", 1)[-1]
+    return token if _TOKEN_RE.fullmatch(token or "") else ""
+
+
+def _jsonld_details(document: str) -> dict[str, dict[str, Any]]:
+    details: dict[str, dict[str, Any]] = {}
+    pattern = re.compile(
+        r"<script\b[^>]*type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        token = _token_from_url(str(value.get("url") or ""))
+        if token:
+            details[token] = value
+        graph = value.get("@graph")
+        if graph is not None:
+            visit(graph)
+
+    for match in pattern.finditer(document):
+        try:
+            visit(json.loads(match.group(1)))
+        except json.JSONDecodeError:
+            continue
+    return details
+
+
+def _find_list_widgets(state: dict[str, Any]) -> list[Any]:
+    direct = _nested(state, "nb", "listWidgets")
+    if isinstance(direct, list):
+        return direct
+    for node in _walk(state):
+        value = node.get("listWidgets")
+        if isinstance(value, list):
+            return value
+    raise ValueError("Divar listWidgets were not found in the server-rendered page")
+
+
+def extract_server_rendered_cards(document: str) -> list[dict[str, Any]]:
+    """Parse the public server-rendered Divar search page without calling api.divar.ir.
+
+    The web app currently embeds listing cards under window.__PRELOADED_STATE__ and
+    supplements them with JSON-LD. This parser intentionally extracts only public
+    search-card information and does not touch login/contact endpoints.
+    """
+    state = _extract_preloaded_state(document)
+    details = _jsonld_details(document)
+    widgets = _find_list_widgets(state)
+
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for widget in widgets:
+        row = _nested(widget, "data", "dto", "data")
+        if not isinstance(row, dict):
+            continue
+        payload = _nested(row, "action", "payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        token = str(payload.get("token") or "")
+        if not _TOKEN_RE.fullmatch(token) or token in seen:
+            continue
+        seen.add(token)
+
+        detail = details.get(token, {})
+        summary_web = payload.get("web_info") if isinstance(payload.get("web_info"), dict) else {}
+        detail_web = detail.get("web_info") if isinstance(detail.get("web_info"), dict) else {}
+        district = str(
+            detail_web.get("district_persian")
+            or summary_web.get("district_persian")
+            or ""
+        ).strip()
+        city = str(
+            detail_web.get("city_persian")
+            or summary_web.get("city_persian")
+            or ""
+        ).strip()
+        floor_size = detail.get("floorSize") if isinstance(detail.get("floorSize"), dict) else {}
+        listing_url = str(detail.get("url") or "").strip()
+        if not listing_url:
+            listing_url = f"{DIVAR_WEB_BASE}/v/-/{quote(token)}"
+
+        cards.append(
+            {
+                "token": token,
+                "title": row.get("title") or detail.get("name") or "",
+                "subtitle": row.get("middle_description_text") or "",
+                "bottom_text": row.get("bottom_description_text") or "",
+                "deposit_text": row.get("top_description_text") or "",
+                "rent_text": row.get("middle_description_text") or "",
+                "district": district,
+                "city": city,
+                "area_hint": floor_size.get("value"),
+                "rooms_hint": detail.get("numberOfRooms"),
+                "description_hint": detail.get("description") or "",
+                "url": listing_url,
+                "raw_card": row,
+                "search_detail": detail,
+            }
+        )
+
+    if not cards:
+        raise ValueError(
+            "No listings were found in Divar's server-rendered page. "
+            "The page structure may have changed or a block page may have been returned."
+        )
+    return cards
+
+
 class DivarCrawler:
     """Polite crawler for public Divar listing/search responses.
 
-    It intentionally does not use contact-info endpoints, login/OTP, browser automation,
-    CAPTCHA bypass, or personal-account endpoints.
+    Preferred Colab transport is the public server-rendered search page. The legacy
+    api.divar.ir transport remains available when that host is reachable. The crawler
+    does not use contact-info endpoints, login/OTP, browser automation, CAPTCHA bypass,
+    proxy rotation, or personal-account endpoints.
     """
 
     def __init__(self, config: Config):
         self.config = config
         c = config.section("crawl")
         self.city_id = str(c.get("city_id", "1"))
+        self.city_slug = str(c.get("city_slug", "tehran"))
         self.category = str(c.get("category", "apartment-rent"))
+        self.web_category_slug = str(c.get("web_category_slug", "rent-apartment"))
+        self.district_slug = str(c.get("district_slug", "")).strip()
+        self.transport = str(c.get("transport", "auto")).strip().lower()
         self.max_listings = int(c.get("max_listings", 500))
         self.max_pages = int(c.get("max_pages", 50))
+        self.max_web_pages = int(c.get("max_web_pages", 4))
         self.delay = float(c.get("request_delay_seconds", 1.2))
         self.jitter = float(c.get("jitter_seconds", 0.35))
         self.timeout = int(c.get("timeout_seconds", 25))
+        self.web_timeout = int(c.get("web_timeout_seconds", min(self.timeout, 20)))
         self.redact_phones = bool(c.get("redact_phone_numbers", True))
         self.cache_dir = Path(c.get("cache_dir", "data/cache"))
         self.raw_dir = Path(c.get("raw_dir", "data/raw"))
@@ -118,10 +277,8 @@ class DivarCrawler:
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "User-Agent": str(c.get("user_agent", "divar-scanner-research/0.1")),
-                "Accept": "application/json, text/plain, */*",
-                "Content-Type": "application/json",
-                "Origin": "https://divar.ir",
+                "User-Agent": str(c.get("user_agent", "divar-scanner-research/0.4")),
+                "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.5",
                 "Referer": "https://divar.ir/",
             }
         )
@@ -137,10 +294,17 @@ class DivarCrawler:
         last_exc: Exception | None = None
         for attempt in range(4):
             try:
-                r = self.session.request(method, url, timeout=self.timeout, **kwargs)
+                r = self.session.request(
+                    method,
+                    url,
+                    timeout=self.timeout,
+                    headers={"Accept": "application/json, text/plain, */*"},
+                    **kwargs,
+                )
                 if r.status_code in {401, 403, 429}:
                     raise DivarBlockedError(
-                        f"Divar returned HTTP {r.status_code}. The crawler stops instead of bypassing access controls."
+                        f"Divar returned HTTP {r.status_code}. "
+                        "The crawler stops instead of bypassing access controls."
                     )
                 r.raise_for_status()
                 return r.json()
@@ -153,6 +317,40 @@ class DivarCrawler:
         assert last_exc is not None
         raise last_exc
 
+    def _request_text(self, url: str) -> str:
+        last_exc: Exception | None = None
+        # Public-page mode is intentionally conservative: only two attempts.
+        for attempt in range(2):
+            try:
+                r = self.session.get(
+                    url,
+                    timeout=self.web_timeout,
+                    headers={"Accept": "text/html,application/xhtml+xml"},
+                )
+                if r.status_code in {401, 403, 429}:
+                    raise DivarBlockedError(
+                        f"Divar web returned HTTP {r.status_code}. "
+                        "The crawler stops instead of bypassing access controls."
+                    )
+                r.raise_for_status()
+                return r.text
+            except DivarBlockedError:
+                raise
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt == 0:
+                    time.sleep(1.0 + random.random())
+        assert last_exc is not None
+        raise last_exc
+
+    def _write_raw(self, rows: list[dict[str, Any]]) -> tuple[str, str]:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        raw_path = self.raw_dir / f"divar_raw_{stamp}.jsonl"
+        with raw_path.open("w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return stamp, str(raw_path)
+
     def fetch_districts(self, use_cache: bool = True) -> list[dict[str, str]]:
         cache = self._cache_path("districts", self.city_id)
         if use_cache and cache.exists():
@@ -164,6 +362,11 @@ class DivarCrawler:
 
     def resolve_districts(self) -> list[DistrictMatch]:
         c = self.config.section("crawl")
+        explicit_ids = [str(x) for x in (c.get("district_ids") or []) if str(x).strip()]
+        if explicit_ids:
+            name = str(c.get("district_query", self.district_slug or "configured district"))
+            return [DistrictMatch(id=x, name=name, score=1.0) for x in explicit_ids]
+
         queries = [str(c.get("district_query", "")).strip()] + [
             str(x).strip() for x in c.get("district_aliases", [])
         ]
@@ -197,7 +400,11 @@ class DivarCrawler:
                 if not token:
                     action = data.get("action")
                     if isinstance(action, dict):
-                        token = ((action.get("payload") or {}) if isinstance(action.get("payload"), dict) else {}).get("token")
+                        token = (
+                            (action.get("payload") or {})
+                            if isinstance(action.get("payload"), dict)
+                            else {}
+                        ).get("token")
                 if isinstance(token, str) and token not in seen:
                     seen.add(token)
                     cards.append(
@@ -226,7 +433,12 @@ class DivarCrawler:
                 out[key] = payload[key]
         return out or None
 
-    def _search_payload(self, district_ids: list[str], pagination: dict[str, Any] | None, page: int) -> dict[str, Any]:
+    def _search_payload(
+        self,
+        district_ids: list[str],
+        pagination: dict[str, Any] | None,
+        page: int,
+    ) -> dict[str, Any]:
         form_data: dict[str, Any] = {
             "category": {"str": {"value": self.category}},
         }
@@ -248,12 +460,14 @@ class DivarCrawler:
                 "form_data": {"data": form_data},
                 "server_payload": {
                     "@type": "type.googleapis.com/widgets.SearchData.ServerPayload",
-                    "additional_form_data": {"data": {"sort": {"str": {"value": "sort_date"}}}},
+                    "additional_form_data": {
+                        "data": {"sort": {"str": {"value": "sort_date"}}}
+                    },
                 },
             },
         }
 
-    def search(self, district_ids: list[str]) -> list[dict[str, Any]]:
+    def search_api(self, district_ids: list[str]) -> list[dict[str, Any]]:
         all_cards: list[dict[str, Any]] = []
         seen: set[str] = set()
         pagination: dict[str, Any] | None = None
@@ -274,6 +488,44 @@ class DivarCrawler:
             self._sleep()
         return all_cards[: self.max_listings]
 
+    def _web_search_base_url(self) -> str:
+        if not _SLUG_RE.fullmatch(self.city_slug):
+            raise ValueError(f"Unsafe/invalid city_slug: {self.city_slug!r}")
+        if not _SLUG_RE.fullmatch(self.web_category_slug):
+            raise ValueError(f"Unsafe/invalid web_category_slug: {self.web_category_slug!r}")
+        if not self.district_slug or not _SLUG_RE.fullmatch(self.district_slug):
+            raise ValueError(
+                "crawl.district_slug is required for server-rendered web mode "
+                "(for this project use 'fatemi')."
+            )
+        return (
+            f"{DIVAR_WEB_BASE}/s/{self.city_slug}/"
+            f"{self.web_category_slug}/{self.district_slug}"
+        )
+
+    def search_web(self) -> tuple[list[dict[str, Any]], list[str]]:
+        base = self._web_search_base_url()
+        all_cards: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        source_urls: list[str] = []
+
+        for page in range(1, max(1, self.max_web_pages) + 1):
+            url = base if page == 1 else f"{base}?page={page}"
+            document = self._request_text(url)
+            source_urls.append(url)
+            cards = extract_server_rendered_cards(document)
+            new_cards = [card for card in cards if card["token"] not in seen]
+            if not new_cards:
+                break
+            for card in new_cards:
+                seen.add(card["token"])
+                all_cards.append(card)
+                if len(all_cards) >= self.max_listings:
+                    return all_cards[: self.max_listings], source_urls
+            self._sleep()
+
+        return all_cards[: self.max_listings], source_urls
+
     def fetch_detail(self, token: str, use_cache: bool = True) -> dict[str, Any]:
         cache = self.cache_dir / f"post_{token}.json"
         if use_cache and cache.exists():
@@ -283,35 +535,109 @@ class DivarCrawler:
         self._sleep()
         return data
 
-    def crawl(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _crawl_web(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        cards, source_urls = self.search_web()
+        rows = [
+            {
+                "card": card,
+                "detail": card.get("search_detail") or {},
+                "crawl_transport": "server_rendered_web",
+            }
+            for card in cards
+        ]
+        stamp, raw_path = self._write_raw(rows)
+        c = self.config.section("crawl")
+        district_name = str(c.get("district_query", self.district_slug))
+        meta = {
+            "crawl_transport": "server_rendered_web",
+            "district_matches": [
+                {"id": f"slug:{self.district_slug}", "name": district_name, "score": 1.0}
+            ],
+            "district_ids": [],
+            "district_slug": self.district_slug,
+            "listing_count": len(rows),
+            "raw_path": raw_path,
+            "source_urls": source_urls,
+            "crawled_at_utc": stamp,
+            "detail_enrichment": "search-page JSON-LD only; api.divar.ir not required",
+            "coverage_note": (
+                "Server-rendered mode is resilient when api.divar.ir is unreachable. "
+                "Divar may expose only a bounded number of cards per rendered page; "
+                "the crawler stops if ?page=N yields no new tokens."
+            ),
+        }
+        return rows, meta
+
+    def _crawl_api(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         matches = self.resolve_districts()
         district_ids = [m.id for m in matches]
         if not district_ids:
             raise RuntimeError(
                 "Could not resolve the configured district to a Divar district id. "
-                "Refusing to crawl all of Tehran accidentally. Inspect the district cache and update config."
+                "Refusing to crawl all of Tehran accidentally. "
+                "Use crawl.transport='web' with district_slug='fatemi' when the "
+                "district API is unavailable."
             )
-        cards = self.search(district_ids)
+        cards = self.search_api(district_ids)
         rows: list[dict[str, Any]] = []
         for card in tqdm(cards, desc="Fetching listing details"):
             try:
                 detail = self.fetch_detail(card["token"])
-                rows.append({"card": card, "detail": detail})
+                rows.append(
+                    {
+                        "card": card,
+                        "detail": detail,
+                        "crawl_transport": "api",
+                    }
+                )
             except (requests.RequestException, ValueError) as exc:
-                rows.append({"card": card, "detail": {}, "crawl_error": str(exc)})
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        raw_path = self.raw_dir / f"divar_raw_{stamp}.jsonl"
-        with raw_path.open("w", encoding="utf-8") as f:
-            for row in rows:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                rows.append(
+                    {
+                        "card": card,
+                        "detail": {},
+                        "crawl_error": str(exc),
+                        "crawl_transport": "api",
+                    }
+                )
+        stamp, raw_path = self._write_raw(rows)
         meta = {
+            "crawl_transport": "api",
             "district_matches": [m.__dict__ for m in matches],
             "district_ids": district_ids,
             "listing_count": len(rows),
-            "raw_path": str(raw_path),
+            "raw_path": raw_path,
             "crawled_at_utc": stamp,
         }
         return rows, meta
+
+    def crawl(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if self.transport not in {"web", "api", "auto"}:
+            raise ValueError("crawl.transport must be one of: web, api, auto")
+
+        if self.transport == "web":
+            return self._crawl_web()
+        if self.transport == "api":
+            return self._crawl_api()
+
+        # Auto is intentionally web-first: Colab/cloud IPs can time out on api.divar.ir
+        # while the public server-rendered page remains reachable.
+        errors: list[str] = []
+        try:
+            return self._crawl_web()
+        except (requests.RequestException, ValueError, DivarBlockedError) as exc:
+            errors.append(f"web:{type(exc).__name__}:{exc}")
+            if isinstance(exc, DivarBlockedError):
+                raise
+        try:
+            rows, meta = self._crawl_api()
+            meta["transport_fallback_errors"] = errors
+            return rows, meta
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
+            errors.append(f"api:{type(exc).__name__}:{exc}")
+            raise DivarTransportError(
+                "Both supported Divar transports failed. "
+                "No access-control bypass was attempted. Errors: " + " | ".join(errors)
+            ) from exc
 
 
 def public_strings(payload: Any) -> list[str]:
