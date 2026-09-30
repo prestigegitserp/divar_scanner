@@ -109,6 +109,9 @@ def test_end_to_end_analysis_pipeline(tmp_path: Path):
         "decision_evaluated",
         "decision_bait_probability",
         "decision_disposition",
+        "data_problem_score",
+        "market_outlier_score",
+        "misleading_risk_score",
         "uncertainty_score",
         "suspicion_score",
         "review_priority_score",
@@ -119,7 +122,11 @@ def test_end_to_end_analysis_pipeline(tmp_path: Path):
     assert len(scored) == len(df)
     assert scored["review_priority_score"].between(0, 1).all()
     assert scored["suspicion_score"].between(0, 1).all()
-    assert meta["pipeline_version"] == "0.3.0"
+    assert scored["data_problem_score"].between(0, 1).all()
+    assert scored["market_outlier_score"].between(0, 1).all()
+    assert scored["misleading_risk_score"].between(0, 1).all()
+    assert np.allclose(scored["suspicion_score"], scored["misleading_risk_score"])
+    assert meta["pipeline_version"] == "0.4.0"
     assert meta["counts"]["total"] == len(df)
 
     candidate = scored.loc[scored["token"] == f"tok{len(df)-1}"].iloc[0]
