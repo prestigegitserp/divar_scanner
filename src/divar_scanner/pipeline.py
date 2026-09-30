@@ -289,7 +289,7 @@ def run_pipeline(
     config = load_config(config_path)
     meta: dict[str, Any] = {
         "project": config.get("project.name", "Divar Scanner"),
-        "pipeline_version": "0.4.3",
+        "pipeline_version": "0.4.4",
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": str(config_path),
     }
