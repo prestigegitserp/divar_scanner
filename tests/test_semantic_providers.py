@@ -1,63 +1,73 @@
 from __future__ import annotations
 
-from pathlib import Path
+import numpy as np
 
-from divar_scanner.config import Config
-from divar_scanner.semantic import resolve_providers
+from divar_scanner.decision import (
+    compile_requests,
+    typed_answer_from_evidence,
+)
 
 
-def _cfg(provider="auto"):
-    return Config(
-        raw={
-            "semantic": {
-                "enabled": True,
-                "provider": provider,
-                "ensemble_max_providers": 1,
-                "models": {"groq": "openai/gpt-oss-20b", "openrouter": "openrouter/free"},
-            }
+def test_choice_is_bounded_and_normalized():
+    q = {
+        "type": "choice",
+        "instructions": "نوع آگهی؟",
+        "criteria": {
+            "plausible": "سازگار",
+            "data_error": "خطای داده",
+            "needs_review": "نیازمند بازبینی",
         },
-        source=Path("test.yaml"),
-    )
+    }
+    rows = [
+        {"key": "plausible", "entailment": 0.75, "neutral": 0.15, "contradiction": 0.10},
+        {"key": "data_error", "entailment": 0.10, "neutral": 0.10, "contradiction": 0.80},
+        {"key": "needs_review", "entailment": 0.30, "neutral": 0.45, "contradiction": 0.25},
+    ]
+    out = typed_answer_from_evidence(q, rows)
+    assert out["choice"] == "plausible"
+    assert set(out["probabilities"]) == set(q["criteria"])
+    assert np.isclose(sum(out["probabilities"].values()), 1.0)
+    assert 0 <= out["confidence"] <= 1
 
 
-def test_auto_provider_prefers_groq_when_only_groq_key(monkeypatch):
-    for name in [
-        "JEV_API_KEY", "TYPESAFE_API_KEY", "CEREBRAS_API_KEY", "GEMINI_API_KEY",
-        "COHERE_API_KEY", "OPENROUTER_API_KEY", "HF_TOKEN", "OPENAI_COMPAT_API_KEY",
-        "OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_MODEL", "SEMANTIC_PROVIDER",
-    ]:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    providers = resolve_providers(_cfg())
-    assert [p.name for p in providers] == ["groq"]
+def test_noul_returns_probability_of_yes():
+    q = {
+        "type": "noul",
+        "instructions": "آیا آگهی گمراه‌کننده است؟",
+        "criteria": {"no": "خیر", "yes": "بله"},
+    }
+    rows = [
+        {"key": "no", "entailment": 0.08, "neutral": 0.10, "contradiction": 0.82},
+        {"key": "yes", "entailment": 0.83, "neutral": 0.09, "contradiction": 0.08},
+    ]
+    out = typed_answer_from_evidence(q, rows)
+    assert out["noul"] > 0.9
+    assert np.isclose(out["noul"], out["probabilities"]["yes"])
 
 
-def test_explicit_provider_does_not_fall_through(monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "g")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "o")
-    monkeypatch.setenv("SEMANTIC_PROVIDER", "openrouter")
-    providers = resolve_providers(_cfg())
-    assert [p.name for p in providers] == ["openrouter"]
+def test_score_is_expected_level():
+    q = {
+        "type": "score",
+        "instructions": "سازگاری را بسنج",
+        "criteria": ["بد", "متوسط", "خوب"],
+    }
+    rows = [
+        {"key": "0", "entailment": 0.05, "neutral": 0.10, "contradiction": 0.85},
+        {"key": "1", "entailment": 0.20, "neutral": 0.20, "contradiction": 0.60},
+        {"key": "2", "entailment": 0.80, "neutral": 0.10, "contradiction": 0.10},
+    ]
+    out = typed_answer_from_evidence(q, rows)
+    assert 1.5 < out["score"] <= 2.0
+    assert 0.75 < out["normalized_score"] <= 1.0
 
 
-def test_local_qwen_requires_no_api_key(monkeypatch):
-    for name in [
-        "JEV_API_KEY", "TYPESAFE_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY",
-        "GEMINI_API_KEY", "COHERE_API_KEY", "OPENROUTER_API_KEY", "HF_TOKEN",
-        "OPENAI_COMPAT_API_KEY", "OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_MODEL",
-    ]:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("SEMANTIC_PROVIDER", "local-qwen")
-    providers = resolve_providers(_cfg())
-    assert len(providers) == 1
-    assert providers[0].name == "local-qwen"
-    assert providers[0].local is True
-    assert providers[0].api_key == ""
-    assert providers[0].model == "Qwen/Qwen3-4B"
-
-
-def test_local_model_can_be_overridden_by_path(monkeypatch):
-    monkeypatch.setenv("SEMANTIC_PROVIDER", "local-qwen-small")
-    monkeypatch.setenv("LOCAL_MODEL_ID", "/content/my_uploaded_model")
-    providers = resolve_providers(_cfg())
-    assert providers[0].model == "/content/my_uploaded_model"
+def test_compile_requests_never_invents_candidates():
+    questions = {
+        "route": {
+            "type": "choice",
+            "instructions": "مسیر؟",
+            "criteria": {"a": "گزینه الف", "b": "گزینه ب"},
+        }
+    }
+    compiled, _ = compile_requests([("state", questions)])
+    assert [x.key for x in compiled] == ["a", "b"]
