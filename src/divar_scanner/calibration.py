@@ -59,9 +59,25 @@ def _extract_logits(raw_json: str, question_id: str) -> tuple[list[str], np.ndar
     try:
         payload = json.loads(str(raw_json or ""))
         answer = payload[question_id]
-        raw_nli = answer["diagnostics"]["raw_nli"]
+        diagnostics = answer["diagnostics"]
     except (json.JSONDecodeError, KeyError, TypeError):
         return None
+
+    # Native Laya backend: use log(raw bounded probabilities) before this
+    # project's target-domain temperature scaling.
+    calibration_logits = diagnostics.get("calibration_logits")
+    if isinstance(calibration_logits, dict) and len(calibration_logits) >= 2:
+        try:
+            keys = list(calibration_logits.keys())
+            return keys, np.asarray(
+                [float(calibration_logits[k]) for k in keys],
+                dtype=float,
+            )
+        except (TypeError, ValueError):
+            return None
+
+    # NLI baselines: use entailment-vs-contradiction evidence.
+    raw_nli = diagnostics.get("raw_nli")
     if not isinstance(raw_nli, dict) or len(raw_nli) < 2:
         return None
     keys = list(raw_nli.keys())
