@@ -53,7 +53,11 @@ def test_laya_training_export_preserves_evidence_firewall_and_gold():
     by_view = {case["split_hint"]: case for case in cases}
 
     full_gold = json.loads(by_view["full"]["gold"])
-    assert full_gold["disposition"]["probabilities"]["misleading_or_bait"] == 0.8
+    full_questions = json.loads(by_view["full"]["questions"])
+    assert set(full_questions["disposition"]["criteria"]) == {"A", "B", "C", "D", "E"}
+    # misleading_or_bait is the fourth option in the canonical disposition order -> D.
+    assert full_gold["disposition"]["label"] == "D"
+    assert full_gold["disposition"]["probabilities"]["D"] == 0.8
     assert full_gold["manual_review"]["probabilities"]["true"] == 0.8
 
     content_gold = json.loads(by_view["content"]["gold"])
