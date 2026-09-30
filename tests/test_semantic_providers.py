@@ -38,3 +38,26 @@ def test_explicit_provider_does_not_fall_through(monkeypatch):
     monkeypatch.setenv("SEMANTIC_PROVIDER", "openrouter")
     providers = resolve_providers(_cfg())
     assert [p.name for p in providers] == ["openrouter"]
+
+
+def test_local_qwen_requires_no_api_key(monkeypatch):
+    for name in [
+        "JEV_API_KEY", "TYPESAFE_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY",
+        "GEMINI_API_KEY", "COHERE_API_KEY", "OPENROUTER_API_KEY", "HF_TOKEN",
+        "OPENAI_COMPAT_API_KEY", "OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_MODEL",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SEMANTIC_PROVIDER", "local-qwen")
+    providers = resolve_providers(_cfg())
+    assert len(providers) == 1
+    assert providers[0].name == "local-qwen"
+    assert providers[0].local is True
+    assert providers[0].api_key == ""
+    assert providers[0].model == "Qwen/Qwen3-4B"
+
+
+def test_local_model_can_be_overridden_by_path(monkeypatch):
+    monkeypatch.setenv("SEMANTIC_PROVIDER", "local-qwen-small")
+    monkeypatch.setenv("LOCAL_MODEL_ID", "/content/my_uploaded_model")
+    providers = resolve_providers(_cfg())
+    assert providers[0].model == "/content/my_uploaded_model"
