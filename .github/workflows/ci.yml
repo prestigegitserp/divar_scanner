@@ -89,3 +89,34 @@ jobs:
           assert engine.backend_name == "laya-multilingual"
           print("Laya import/runtime adapter OK:", getattr(laya, "__version__", "unknown"))
           PY
+
+  browser-runtime-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[browser]'
+      - name: Import browser crawler without launching Divar
+        run: |
+          python - <<'PY'
+          import playwright
+          from divar_scanner.browser_crawler import normalize_dom_cards
+          from divar_scanner.cli import build_parser
+
+          rows = [{
+              "href": "/v/test/AbCd1234",
+              "text": "آپارتمان ۸۵ متری دو خواب\nودیعه ۸۰۰ میلیون\nاجاره ۱۵ میلیون",
+          }]
+          cards = normalize_dom_cards(rows)
+          assert cards[0]["area_hint"] == 85
+          assert cards[0]["rooms_hint"] == 2
+
+          args = build_parser().parse_args(["acquire", "--transport", "browser"])
+          assert args.command == "acquire"
+          assert args.transport == "browser"
+          print("Playwright/browser acquisition adapter OK")
+          PY

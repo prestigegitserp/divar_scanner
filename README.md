@@ -1,4 +1,4 @@
-# Divar Scanner v0.4 — Laya System-One rental-risk research pipeline
+# Divar Scanner v0.4.4 — automatic browser crawler + Laya System-One
 
 A research-grade pipeline for public apartment-rental listings around Fatemi, Tehran.
 
@@ -204,72 +204,103 @@ divar-scanner export-laya-training \
 
 The exporter uses the same opaque option transport as inference.
 
-## Colab / Divar connectivity
+## Automatic Divar crawling
 
-Some Colab/cloud runtimes cannot establish TCP connections to `divar.ir` or
-`api.divar.ir`. This project therefore does **not** require Kenar for the default
-workflow. Acquisition and analysis are separated.
+The repository default is now a **real Chromium browser crawler** driven by Playwright.
+You do not need to browse or save pages manually.
 
-### Recommended Colab path: browser snapshot
+The crawler:
 
-Open the public Fatemi search page in your normal browser/network, then save what the
-browser has already loaded.
+1. opens the public Fatemi rental search page;
+2. waits for listing links;
+3. scrolls automatically until it reaches the configured limit or the list stops growing;
+4. deduplicates listing tokens;
+5. optionally opens each public listing page for richer text/JSON-LD evidence;
+6. writes an immutable raw JSONL snapshot;
+7. can then feed that snapshot directly into the statistical + Laya pipeline.
 
-You can either:
+It does not log in, open contact/phone endpoints, solve CAPTCHAs, rotate proxies, spoof
+fingerprints, or continue after explicit 401/403/429/access-control signals.
 
-1. use the browser's **Save Page / Save as HTML** command; or
-2. run `tools/save_current_divar_page.js` in DevTools Console on the already-open page.
-
-The helper JavaScript makes **no new network request**. It only serializes the current
-document and downloads it as HTML.
-
-Upload one or more of these files to Colab with:
-
-```text
-ACQUISITION_MODE = snapshot
-```
-
-Accepted inputs:
-
-```text
-.html / .htm
-.jsonl / .ndjson
-.csv / .parquet
-.zip
-directory of multiple snapshot files
-```
-
-Multiple pages/snapshots are merged and deduplicated by listing token (or URL). This makes
-it practical to collect several pages or repeated snapshots over time and then run the
-full statistical + Laya pipeline with **zero Divar network access from Colab**.
-
-Default config:
-
-```yaml
-crawl:
-  transport: snapshot
-  district_slug: fatemi
-```
-
-### Local direct acquisition
-
-If your own machine/network can reach Divar, the existing direct transport remains
-available:
+### One-time browser setup
 
 ```bash
-divar-scanner run \
+git clone https://github.com/prestigegitserp/divar_scanner.git divar_scanner_repo
+cd divar_scanner_repo
+
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+python -m pip install -e '.[browser]'
+python -m playwright install chromium
+```
+
+### Fully automatic acquisition
+
+```bash
+divar-scanner acquire \
   --config config/fatemi.yaml \
-  --crawl-transport web \
+  --transport browser \
   --max-listings 200
 ```
 
-That writes raw JSONL snapshots which can later be uploaded to Colab.
+No manual search is required. The command prints metadata including the generated path,
+for example:
 
-`transport: api` and `transport: auto` remain research/compatibility paths. Kenar code is
-still present as an optional transport for users who explicitly want it, but it is not
-required or used by the default notebook/config.
+```text
+data/raw/browser_raw_20261001T....jsonl
+```
 
-No proxy rotation, CAPTCHA bypass, login/OTP flow, or access-control circumvention is used.
+By default the browser runs headless and enriches public listing details. For debugging you
+can watch Chromium:
+
+```bash
+divar-scanner acquire --transport browser --max-listings 100 --headed
+```
+
+To make acquisition lighter and only collect search cards:
+
+```bash
+divar-scanner acquire --transport browser --max-listings 200 --no-detail-enrichment
+```
+
+### Crawl + analyze in one command
+
+If the machine also has enough resources for the decision model:
+
+```bash
+python -m pip install -e '.[browser,decision]'
+python -m playwright install chromium
+
+divar-scanner run \
+  --config config/fatemi.yaml \
+  --crawl-transport browser \
+  --max-listings 200 \
+  --decision-backend laya-multilingual
+```
+
+### Colab handoff
+
+Your Colab runtime cannot currently establish TCP connections to Divar, so the browser
+crawler should run on a machine/network that can open the public site. Colab remains the
+GPU analysis environment:
+
+```text
+local Playwright crawler
+        ↓
+browser_raw_*.jsonl
+        ↓
+Colab snapshot upload
+        ↓
+statistics + Laya System-One
+```
+
+The Colab notebook therefore keeps `ACQUISITION_MODE='snapshot'`; that is a network
+constraint of Colab, not a manual-browsing requirement. The snapshot itself is produced
+automatically by the browser crawler.
+
+The older `web` and `api` transports remain compatibility paths. Kenar code remains
+optional but is not required by the default workflow.
 
 ## Google Colab
 
@@ -297,7 +328,8 @@ git clone https://github.com/prestigegitserp/divar_scanner.git divar_scanner_rep
 cd divar_scanner_repo
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev,decision]'
+python -m pip install -e '.[dev,browser,decision]'
+python -m playwright install chromium
 pytest
 ```
 

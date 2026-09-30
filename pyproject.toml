@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "divar-scanner"
-version = "0.4.3"
+version = "0.4.4"
 description = "Divar Tehran rental anomaly scanner with Jev-style non-generative decision models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,9 @@ decision = [
   "torch>=2.2",
   "transformers>=4.48,<6",
   "sentencepiece>=0.2,<1",
+]
+browser = [
+  "playwright>=1.48,<2",
 ]
 
 [project.scripts]

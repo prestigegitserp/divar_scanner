@@ -9,6 +9,7 @@ from .config import load_config
 from .laya_training import export_laya_training_file
 from .evaluation import evaluate_file
 from .pipeline import run_pipeline
+from .crawler import DivarCrawler
 
 
 def _patch_config(
@@ -75,9 +76,31 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-listings", type=int, default=None)
     run.add_argument(
         "--crawl-transport",
-        choices=["kenar", "web", "api", "auto"],
+        choices=["browser", "web", "api", "auto", "kenar"],
         default=None,
-        help="listing acquisition transport; kenar is recommended for Colab",
+        help="listing acquisition transport; browser is recommended for automatic local crawling",
+    )
+
+    acquire = sub.add_parser(
+        "acquire",
+        help="automatically crawl public Divar listings and save a raw JSONL snapshot",
+    )
+    acquire.add_argument("--config", default="config/fatemi.yaml")
+    acquire.add_argument("--max-listings", type=int, default=200)
+    acquire.add_argument(
+        "--transport",
+        choices=["browser", "web", "api", "auto"],
+        default="browser",
+    )
+    acquire.add_argument(
+        "--headed",
+        action="store_true",
+        help="show Chromium while crawling (useful for debugging)",
+    )
+    acquire.add_argument(
+        "--no-detail-enrichment",
+        action="store_true",
+        help="collect search cards only; do not open each public listing page",
     )
 
     analyze = sub.add_parser("analyze", help="analyze an existing normalized CSV/Parquet file")
@@ -132,6 +155,26 @@ def main() -> None:
             seed=args.seed,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "acquire":
+        import yaml
+
+        cfg = load_config(args.config).raw
+        crawl = cfg.setdefault("crawl", {})
+        crawl["transport"] = args.transport
+        crawl["max_listings"] = int(args.max_listings)
+        if args.transport == "browser":
+            crawl["browser_headless"] = not bool(args.headed)
+            crawl["browser_enrich_details"] = not bool(args.no_detail_enrichment)
+        tmp = Path(".divar_scanner.acquire.yaml")
+        tmp.write_text(
+            yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        crawler = DivarCrawler(load_config(tmp))
+        _rows, meta = crawler.crawl()
+        print(json.dumps(meta, ensure_ascii=False, indent=2))
         return
 
     cfg = _patch_config(
