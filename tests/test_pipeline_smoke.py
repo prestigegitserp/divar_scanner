@@ -126,7 +126,7 @@ def test_end_to_end_analysis_pipeline(tmp_path: Path):
     assert scored["market_outlier_score"].between(0, 1).all()
     assert scored["misleading_risk_score"].between(0, 1).all()
     assert np.allclose(scored["suspicion_score"], scored["misleading_risk_score"])
-    assert meta["pipeline_version"] == "0.4.0"
+    assert meta["pipeline_version"] == "0.4.1"
     assert meta["counts"]["total"] == len(df)
 
     candidate = scored.loc[scored["token"] == f"tok{len(df)-1}"].iloc[0]

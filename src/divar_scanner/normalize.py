@@ -154,22 +154,48 @@ def normalize_listing(raw: dict[str, Any], redact_phones: bool = True) -> dict[s
     detail = raw.get("detail") or {}
     rows = extract_rows(detail)
     desc = extract_description(detail)
+    if not desc:
+        desc = str(card.get("description_hint") or "").strip()
     if redact_phones:
         desc = redact_phone_numbers(desc)
 
     deposit = parse_number(find_value(rows, ("ودیعه", "رهن", "مبلغ ودیعه")))
+    if deposit is None:
+        deposit = parse_number(card.get("deposit_text"))
     rent = parse_number(find_value(rows, ("اجاره ماهانه", "اجارهٔ ماهانه", "اجاره")))
+    if rent is None:
+        rent_text = card.get("rent_text")
+        rent = parse_number(rent_text)
+        if rent is None and "رهن کامل" in normalize_text(rent_text):
+            rent = 0.0
+
     area = parse_number(find_value(rows, ("متراژ", "مساحت")))
+    if area is None:
+        floor_size = detail.get("floorSize") if isinstance(detail, dict) else None
+        if isinstance(floor_size, dict):
+            area = parse_number(floor_size.get("value"))
+        if area is None:
+            area = parse_number(card.get("area_hint"))
+
     year = parse_int(find_value(rows, ("ساخت", "سال ساخت")))
+
     rooms = parse_int(find_value(rows, ("اتاق", "تعداد اتاق")))
+    if rooms is None:
+        rooms = parse_int(
+            (detail.get("numberOfRooms") if isinstance(detail, dict) else None)
+            or card.get("rooms_hint")
+        )
 
     token = str(card.get("token") or "")
     row = {
         "token": token,
-        "url": f"https://divar.ir/v/-/{token}" if token else "",
+        "url": str(card.get("url") or (f"https://divar.ir/v/-/{token}" if token else "")),
         "title": extract_title(detail, card),
         "description": desc,
-        "neighborhood": _extract_neighborhood(detail, card, rows),
+        "neighborhood": (
+            _extract_neighborhood(detail, card, rows)
+            or str(card.get("district") or "").strip()
+        ),
         "area_m2": area,
         "rooms": rooms,
         "year_built_shamsi": year,
