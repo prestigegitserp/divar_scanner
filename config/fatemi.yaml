@@ -1,0 +1,61 @@
+project:
+  name: "Tehran Fatemi Rental Anomaly Scanner"
+  random_seed: 42
+
+crawl:
+  city_id: "1"
+  city_slug: "tehran"
+  category: "apartment-rent"
+  district_query: "فاطمی"
+  district_aliases:
+    - "فاطمی"
+    - "میدان فاطمی"
+    - "دکتر فاطمی"
+  max_listings: 500
+  max_pages: 50
+  request_delay_seconds: 1.2
+  jitter_seconds: 0.35
+  timeout_seconds: 25
+  user_agent: "divar-scanner-research/0.1 (+public listing analysis)"
+  redact_phone_numbers: true
+  cache_dir: "data/cache"
+  raw_dir: "data/raw"
+
+features:
+  rent_to_deposit_multiplier: 30.0
+  area_min: 10
+  area_max: 1000
+  rooms_max: 12
+  shamsi_year_min: 1300
+  shamsi_year_max: 1410
+  area_bucket_size: 20
+
+anomaly:
+  robust_z_clip: 8.0
+  peer_min_count: 8
+  isolation_contamination: "auto"
+  duplicate_similarity_threshold: 0.88
+  duplicate_max_features: 10000
+
+semantic:
+  enabled: true
+  provider: "auto"
+  model: "jev-latest"
+  top_k: 80
+  min_prefilter_score: 0.35
+  timeout_seconds: 30
+  retries: 3
+
+scoring:
+  data_quality_weight: 0.24
+  market_anomaly_weight: 0.36
+  duplicate_weight: 0.12
+  semantic_weight: 0.28
+  review_threshold: 0.62
+  high_risk_threshold: 0.80
+
+output:
+  directory: "outputs/fatemi"
+  write_csv: true
+  write_parquet: true
+  write_html_report: true
