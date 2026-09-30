@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from divar_scanner.laya_backend import (
+    _normalize_laya_answer,
+    adapt_questions_for_laya,
+)
+
 from divar_scanner.decision import (
     compile_requests,
     resolve_model_specs,
@@ -108,3 +113,67 @@ def test_model_disagreement_reduces_confidence():
         typed_answer_from_evidence(q, disagree)["confidence"]
         < typed_answer_from_evidence(q, clean)["confidence"]
     )
+
+
+def test_laya_registry_is_native_decision_engine():
+    spec = resolve_model_specs("laya-multilingual", {})[0]
+    assert spec.engine == "laya"
+    assert spec.model_name == "convaiinnovations/laya"
+    assert spec.subfolder == "multilingual"
+    assert spec.license == "Apache-2.0"
+
+
+def test_laya_question_adapter_uses_closed_opaque_choice_labels_and_boolean_slots():
+    questions = {
+        "route": {
+            "type": "choice",
+            "instructions": "نوع؟",
+            "criteria": {"normal": "عادی", "error": "خطای داده"},
+        },
+        "flag": {
+            "type": "noul",
+            "instructions": "مشکوک است؟",
+            "criteria": {"no": "شواهد کافی نیست", "yes": "شواهد کافی است"},
+        },
+    }
+    adapted, meta = adapt_questions_for_laya(questions)
+    assert set(adapted["route"]["criteria"]) == {"A", "B"}
+    assert meta["route"]["reverse"] == {"A": "normal", "B": "error"}
+    assert set(adapted["flag"]["criteria"]) == {"false", "true"}
+    assert adapted["flag"]["labels"] == {"false": "B", "true": "A"}
+
+
+def test_laya_choice_normalization_maps_back_and_temperature_preserves_argmax():
+    original = {
+        "type": "choice",
+        "instructions": "نوع؟",
+        "criteria": {"normal": "عادی", "error": "خطا"},
+    }
+    _, metadata = adapt_questions_for_laya({"q": original})
+    raw = {
+        "type": "choice",
+        "choice": "A",
+        "probabilities": {"A": 0.8, "B": 0.2},
+        "confidence": 0.4,
+        "answer_confidence": 0.8,
+        "action": {"act_probability": 1.0},
+    }
+    out = _normalize_laya_answer("q", raw, metadata["q"], temperature=2.0)
+    assert out["choice"] == "normal"
+    assert out["probabilities"]["normal"] > out["probabilities"]["error"]
+    assert np.isclose(sum(out["probabilities"].values()), 1.0)
+    assert "calibration_logits" in out["diagnostics"]
+    assert out["diagnostics"]["action_ignored"] is True
+
+
+def test_laya_noul_normalization_returns_yes_probability():
+    q = {
+        "type": "noul",
+        "instructions": "آیا؟",
+        "criteria": {"no": "خیر", "yes": "بله"},
+    }
+    _, metadata = adapt_questions_for_laya({"q": q})
+    raw = {"type": "noul", "noul": 0.9, "confidence": 0.9, "answer_confidence": 0.9}
+    out = _normalize_laya_answer("q", raw, metadata["q"], temperature=1.0)
+    assert out["noul"] > 0.89
+    assert np.isclose(out["probabilities"]["yes"], out["noul"])
