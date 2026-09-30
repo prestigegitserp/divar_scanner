@@ -13,6 +13,11 @@ def test_repository_fatemi_config_parses_cleanly():
     cfg = load_config(ROOT / "config" / "fatemi.yaml")
     assert cfg.get("decision.backend") == "laya-multilingual"
     assert cfg.get("decision.model_override") is None
+    assert cfg.get("decision.permutation_passes") == 2
+    assert cfg.get("decision.min_order_stability") == 0.80
+    assert cfg.get("decision.trust_stage") == "bootstrap"
+    assert cfg.get("scoring.bootstrap_decision_multiplier") == 0.25
+    assert cfg.get("scoring.misleading_decision_weight") == 0.58
     assert cfg.get("decision.ensemble_backends") == [
         "mdeberta-nli",
         "parsbert-parsinlu",

@@ -7,6 +7,7 @@ from pathlib import Path
 from .calibration import calibrate_file
 from .config import load_config
 from .laya_training import export_laya_training_file
+from .evaluation import evaluate_file
 from .pipeline import run_pipeline
 
 
@@ -77,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--output", default="config/fatemi_calibration.json")
     calibrate.add_argument("--min-samples", type=int, default=12)
 
+    evaluate = sub.add_parser(
+        "evaluate-decisions",
+        help="evaluate bounded decision probabilities against human labels",
+    )
+    evaluate.add_argument("--input", required=True)
+    evaluate.add_argument("--output", default="outputs/decision_evaluation.json")
+
     export_laya = sub.add_parser(
         "export-laya-training",
         help="convert human-labelled annotation rows to Laya state/questions/gold JSONL",
@@ -95,6 +103,11 @@ def main() -> None:
             args.output,
             min_samples=args.min_samples,
         )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "evaluate-decisions":
+        result = evaluate_file(args.input, args.output)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 

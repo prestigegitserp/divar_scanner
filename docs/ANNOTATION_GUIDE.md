@@ -1,92 +1,104 @@
-# Human annotation guide — Fatemi rental review
+# Human annotation guide — Fatemi rental review v0.4
 
-The model is a triage system. Annotators should label **observable evidence**, not make legal accusations of fraud.
+The scanner is a triage/research system. Annotators label observable evidence, not legal fraud.
 
-## Primary disposition
+## 1. Primary disposition — human_disposition
 
-Choose exactly one value for `human_disposition`:
+Choose one:
 
-### `plausible`
+- `plausible`: coherent listing; no material unresolved issue.
+- `data_error`: main issue is extraction/parser/structured-data corruption.
+- `market_outlier`: coherent listing but statistically unusual versus comparable properties.
+- `misleading_or_bait`: material evidence beyond price unusualness supports misleading/bait-like representation.
+- `ambiguous_mixed`: competing explanations remain genuinely unresolved.
 
-Use when the listing is internally coherent and there is no material evidence of a data problem, misleading representation, or unexplained market anomaly.
+Do not label `misleading_or_bait` merely because rent/deposit is cheap, expensive, or statistically extreme.
 
-### `data_error`
+## 2. Integrity class — human_integrity_class
 
-Use when the main issue is most plausibly extraction / parsing / structured-data corruption or a field mismatch.
+Choose one:
 
-Examples:
+- `consistent`: text and structured fields materially agree.
+- `extraction_error`: mismatch is best explained by crawler/parser/extraction failure.
+- `listing_claim_conflict`: listing claims themselves materially conflict with structured representation.
+- `insufficient_evidence`: not enough evidence to distinguish the above.
 
-- structured area says 65 m² while the body clearly says 140 m²;
-- structured one-bedroom while title/body consistently describe three bedrooms;
-- crawler/parser dropped or misread a numeric field.
+## 3. Duplicate pattern — human_duplicate_pattern
 
-Do **not** use this merely because the property is unusual.
+Choose one:
 
-### `market_outlier`
+- `no_duplicate_evidence`: similarity is insufficient.
+- `normal_template_reuse`: shared boilerplate/template without material property conflict.
+- `likely_same_property_repost`: likely same property/listing reposted with limited edits.
+- `cross_property_conflict`: highly similar copy attached to materially different neighborhood/price/property facts.
 
-Use when the listing is coherent but its price or property-feature combination is genuinely unusual versus comparable listings.
+Template reuse by agents is not automatically bait.
 
-A low or high price **alone is not evidence of fraud or bait**.
+## 4. Market status — human_market_status
 
-### `misleading_or_bait`
+Choose one:
 
-Use only when there is material evidence beyond ordinary price unusualness, such as:
+- `typical`: consistent with peer market.
+- `moderate_outlier`: meaningful but not extreme deviation.
+- `extreme_outlier`: multiple independent market signals support a strong deviation.
+- `insufficient_context`: peer/context evidence is too weak.
 
-- mutually inconsistent claims that appear promotional rather than a simple parser error;
-- near-identical ad copy repeatedly attached to materially different properties/areas/neighborhoods;
-- content that misrepresents important property attributes;
-- repeated listing patterns whose contradictions cannot reasonably be explained by extraction error.
+This is a market-position label, not a deception label.
 
-This is still a review label, not a legal finding.
+## 5. Independent yes/no labels
 
-### `ambiguous_mixed`
+### human_bait
 
-Use when two or more explanations are genuinely plausible and no single primary disposition dominates.
+- yes: meaningful misleading/bait evidence beyond price anomaly.
+- no: insufficient evidence.
 
-## Independent yes/no labels
+### human_data_error
 
-These labels are intentionally separate from the primary disposition.
+- yes: parser/extraction/data corruption is meaningfully supported.
+- no: insufficient evidence.
 
-### `human_bait`
+### human_manual_review
 
-- `yes`: meaningful evidence of misleading/bait-like representation beyond a simple price outlier.
-- `no`: evidence is insufficient.
+- yes: human inspection is warranted before trusting the row.
+- no: routine use is reasonable on available evidence.
 
-### `human_data_error`
+## 6. Consistency — human_consistency_level
 
-- `yes`: parser/extraction/structured-data error is meaningfully supported.
-- `no`: no such evidence.
+- 0: major multiple contradictions
+- 1: several important inconsistencies
+- 2: ambiguous/limited mismatch
+- 3: mostly consistent
+- 4: strongly consistent
 
-### `human_manual_review`
+## 7. Confidence and notes
 
-- `yes`: a human should inspect this listing before trusting it.
-- `no`: routine use is reasonable on available evidence.
-
-## Consistency score
-
-Set `human_consistency_level` to one integer:
-
-- 0 — major, multiple contradictions
-- 1 — several important inconsistencies
-- 2 — ambiguous / limited mismatch
-- 3 — mostly consistent
-- 4 — strongly consistent
+`human_label_confidence` should be between 0.5 and 1.0. Use `human_notes` to record the evidence that drove difficult labels.
 
 ## Annotation protocol
 
-1. Review the raw title/body and structured fields before looking at the model's final risk band when possible.
-2. Treat statistical anomaly scores as supporting evidence, never as ground truth.
-3. Do not infer intent from price alone.
-4. When uncertain, use `ambiguous_mixed` and explain why in `human_notes`.
-5. For a calibration/evaluation study, keep a held-out set that was **not** used to tune temperatures or thresholds.
-6. Prefer two independent annotators for a subset and measure agreement. Resolve recurring disagreements by refining this guide rather than silently forcing consensus.
+1. Review title/body and structured fields before model risk bands when possible.
+2. Treat statistical anomaly values as evidence, never ground truth.
+3. Keep market-outlier and misleading/bait judgments separate.
+4. Distinguish parser error from genuine contradiction in the listing.
+5. For duplicate clusters, compare at least two cluster members before using `cross_property_conflict`.
+6. Use `ambiguous_mixed` / `insufficient_evidence` instead of forcing certainty.
+7. Double-annotate a subset and calculate agreement.
+8. Freeze an untouched held-out evaluation split before tuning calibration/thresholds.
 
-## Calibration split
+## Recommended data split
 
-A practical starting point after enough reviewed rows:
+After enough labels, create splits by listing/duplicate cluster so near-duplicates cannot leak across train and evaluation:
 
-- calibration set: fit question-specific temperatures;
-- evaluation set: measure NLL/Brier score, disposition accuracy, review precision/recall and reliability;
-- do not report calibration-set metrics as final model performance.
+- train/domain-adaptation split;
+- calibration split for question temperatures;
+- held-out evaluation split.
 
-The project generates the required blank human-label columns automatically in `review_queue_*.csv`.
+Do not random-split individual rows when near-duplicate cluster members can appear on both sides.
+
+## Evaluation
+
+After labelling:
+
+    divar-scanner evaluate-decisions --input labelled.csv --output outputs/decision_evaluation.json
+
+Report probability quality (NLL, Brier, ECE), coverage after abstention, and selective accuracy — not accuracy alone.

@@ -1,5 +1,5 @@
 project:
-  name: "Tehran Fatemi Rental Anomaly Scanner"
+  name: "Tehran Fatemi Rental System-One Scanner"
   random_seed: 42
 
 crawl:
@@ -16,7 +16,7 @@ crawl:
   request_delay_seconds: 1.2
   jitter_seconds: 0.35
   timeout_seconds: 25
-  user_agent: "divar-scanner-research/0.3 (+public listing analysis)"
+  user_agent: "divar-scanner-research/0.4 (+public listing analysis)"
   redact_phone_numbers: true
   cache_dir: "data/cache"
   raw_dir: "data/raw"
@@ -40,42 +40,80 @@ anomaly:
 
 decision:
   enabled: true
+
+  # Primary engine: native non-autoregressive System-One decision model.
+  # mmBERT encoder + typed decision head, no token generation.
   backend: "laya-multilingual"
-  # Native System-One checkpoint (Apache-2.0, mmBERT + decision head).
+
+  # Laya's multilingual base is an annotation bootstrap until Persian/Fatemi
+  # held-out labels and domain adaptation justify more influence.
+  trust_stage: "bootstrap"  # bootstrap | calibrated | adapted
+
   laya_model_id: "convaiinnovations/laya"
   laya_subfolder: "multilingual"
-  # Optional NLI model override, used only by NLI baseline backends.
+
+  # Robustness against option-position bias:
+  # every logical choice/score/noul is transported as opaque bounded choices
+  # and pooled over deterministic option permutations.
+  permutation_passes: 2
+
+  # NLI baselines remain only for research comparisons, not as the default engine.
   model_override: null
-  # Alternative non-generative research baselines:
-  #   parsbert-parsinlu  (Persian specialist; CC-BY-NC-SA-4.0)
-  #   mbert-parsinlu     (Persian specialist; CC-BY-NC-SA-4.0)
-  #   persian-ensemble   (fuses mDeBERTa + ParsBERT evidence before option softmax)
   ensemble_backends:
     - "mdeberta-nli"
     - "parsbert-parsinlu"
   ensemble_weights:
     mdeberta-nli: 0.55
     parsbert-parsinlu: 0.45
+
   calibration_file: "config/fatemi_calibration.json"
   device: "auto"
   strict: true
+
+  # Selection: high-risk candidates + stratified exploration across the score range.
   top_k: 60
-  exploration_sample: 20
+  exploration_sample: 24
+  exploration_bins: 6
   min_prefilter_score: 0.24
+
   max_length: 1024
   batch_size: 24
+
+  # Selective prediction / abstention policy.
+  min_effective_confidence: 0.58
+  min_coherence: 0.55
+  min_order_stability: 0.80
+
+  # Target-domain temperatures; a labelled calibration file overrides per question.
   temperatures:
     choice: 1.0
     score: 1.0
     noul: 1.0
 
 scoring:
-  data_quality_weight: 0.22
-  market_anomaly_weight: 0.38
-  duplicate_weight: 0.16
-  decision_weight: 0.24
-  review_threshold: 0.58
-  high_risk_threshold: 0.78
+  # Data-quality channel
+  data_rule_weight: 0.72
+  data_decision_weight: 0.28
+
+  # Market-outlier channel
+  market_stat_weight: 0.82
+  market_decision_weight: 0.18
+
+  # Misleading/bait channel: intentionally no single-listing market score.
+  misleading_duplicate_weight: 0.42
+  misleading_decision_weight: 0.58
+
+  # Trust caps for System-One evidence. Confidence alone is not enough because
+  # the base multilingual checkpoint can be over-confident zero-shot.
+  bootstrap_decision_multiplier: 0.25
+  calibrated_decision_multiplier: 0.45
+  adapted_decision_multiplier: 1.0
+
+  # Abstention increases review priority, not fraud suspicion.
+  abstain_review_uplift: 0.08
+
+  review_threshold: 0.55
+  high_risk_threshold: 0.75
 
 output:
   directory: "outputs/fatemi"

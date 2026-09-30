@@ -1,341 +1,180 @@
-# Divar Scanner v0.3 — Jev-style bounded decision system for Tehran rentals
+# Divar Scanner v0.4 — Laya System-One rental-risk research pipeline
 
-A research-grade pipeline for collecting public apartment-rental listings around **Fatemi, Tehran** and prioritizing listings that deserve human review.
+A research-grade pipeline for public apartment-rental listings around Fatemi, Tehran.
 
-The central design is **not an LLM agent**. The default decision layer is a non-generative NLI sequence classifier that implements a Jev-style closed decision contract:
+The core decision layer is **not a generative LLM**. The default engine is **Laya Multilingual**, an open, non-autoregressive System-One model with a multilingual encoder and typed decision head. It receives caller-defined bounded options and returns probabilities; it does not write free-form answers.
 
-```text
-state + caller-supplied options
-            │
-            ▼
-  entail / neutral / contradict
-            │
-            ▼
- bounded option evidence
-            │
-            ▼
- choice / score / noul probabilities
-```
+> The scanner prioritizes rows for human review. It does not prove fraud, deception, or criminal intent.
 
-No answer token is generated. A label that was not supplied by the caller cannot be invented.
+## Why Laya
 
-> The project does not claim to reproduce TypeSafe Jev's unpublished internal weights/training. It preserves the public typed-decision shape and uses open sequence-classification models as the decision motor.
+`laya-multilingual` is the primary backend because it best matches the project requirement:
 
----
+- Jev/System-One style bounded decisions;
+- no autoregressive text generation;
+- dynamic caller-supplied option descriptions;
+- open weights / Apache-2.0;
+- multilingual encoder suitable for Persian experiments;
+- practical on Google Colab.
+
+Scientifically, Laya still contains a pretrained language **encoder** (mmBERT-like). It is not an autoregressive/chat LLM. If 'non-language-model at all' were required, dynamic semantic labels would have to be replaced with a fixed supervised head.
 
 ## Architecture
 
 ```text
-Divar public listing/search payloads
-                │
-                ▼
-       conservative crawler + cache
-                │
-                ▼
-    Persian normalization / extraction
-                │
-        ┌───────┴──────────────────────────────────────┐
-        │                                              │
-        ▼                                              ▼
-field consistency                              market evidence
-area/room/amenity                         contract-style aware peers
-cross-checks                              25x / 30x / 35x sensitivity
-        │                                  Isolation Forest
-        │                                  OOF price model
-        │                                  Local Outlier Factor
-        │                                              │
-        └────────────────┬─────────────────────────────┘
-                         │
-                         ▼
-                duplicate similarity graph
-        copied text / neighborhood / price inconsistency
-                         │
-                         ▼
-                   cheap prefilter
-                         │
-                  top candidates only
-                         ▼
-            bounded decision layer
-          ┌──────────────┼──────────────┐
-          │              │              │
-       choice           score          noul
-          │              │              │
-          └──────────────┼──────────────┘
-                         ▼
-             confidence / disagreement
-                         │
-                         ▼
-           evidence-aware risk fusion
-                         │
-             normal / review / high
-                         │
-          CSV / Parquet / HTML report
+Divar public listings
+       ↓
+normalization + Persian field extraction
+       ↓
+deterministic consistency checks
+       ↓
+robust market peers + conversion sensitivity
+       ↓
+Isolation Forest + OOF price model + LOF
+       ↓
+duplicate similarity graph
+       ↓
+priority candidates + stratified exploration
+       ↓
+Laya System-One decision packs
+  ├─ integrity/data-error
+  ├─ duplicate/bait
+  ├─ market status
+  └─ final disposition/review
+       ↓
+option-permutation stability + cross-question coherence
+       ↓
+selective prediction / abstention
+       ↓
+three independent risk channels
+  ├─ data_problem_score
+  ├─ market_outlier_score
+  └─ misleading_risk_score
+       ↓
+review_priority_score
+       ↓
+CSV / Parquet / HTML / annotation export
 ```
 
----
+## Jev-style primitives without generation
 
-## Decision model: no generation
-
-### Default backend
+The project keeps the logical primitives `choice`, `score`, and `noul`, but v0.4 transports all of them through one robust closed-choice interface.
 
 ```text
-mdeberta-nli
-MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7
+logical option meaning
+       ↓
+opaque A/B/C/... marker
+       ↓
+Laya bounded decision head
+       ↓
+probability distribution
+       ↓
+map back to logical keys
 ```
 
-It is loaded with:
+- `choice`: argmax and full option distribution.
+- `score`: expected ordered level from the bounded distribution.
+- `noul`: P(yes) from a closed two-option distribution.
 
-```python
-AutoModelForSequenceClassification
-```
+No label can be returned unless the caller supplied it.
 
-not `AutoModelForCausalLM` and not a text-generation pipeline.
+## Position-bias mitigation
 
-The model is multilingual NLI and its published training-language list includes Persian (`fa`). The default checkpoint is MIT licensed.
+Laya's public notes document position bias for multilingual score questions and sensitivity in noul. v0.4 therefore:
 
-### Persian specialist
+1. uses opaque option markers;
+2. runs deterministic option permutations (default: canonical + reversed);
+3. maps every pass back to canonical keys;
+4. pools probabilities geometrically;
+5. records Jensen-Shannon disagreement as `decision_order_stability`;
+6. abstains when order stability is too low.
 
-```text
-parsbert-parsinlu
-persiannlp/parsbert-base-parsinlu-entailment
-```
-
-This is a Persian textual-entailment classifier trained on ParsiNLU. Its model card exposes:
-
-```text
-entails / contradicts / neutral
-```
-
-License: `CC-BY-NC-SA-4.0`. Review the license before any commercial deployment.
-
-### Persian ensemble
-
-```text
-persian-ensemble
-```
-
-Default members:
-
-```text
-0.55 × mdeberta-nli
-0.45 × parsbert-parsinlu
-```
-
-The ensemble fuses **pre-softmax decision evidence**, not final probabilities:
-
-```text
-e_(m,i) = log P_m(entail_i) - log P_m(contradict_i)
-
-e_i = Σ_m w_m e_(m,i)
-
-P(option_i) = softmax(e_i / T)
-```
-
-If the models disagree strongly on a candidate, that disagreement lowers the reported decision confidence.
-
-See:
-
-- `docs/DECISION_ARCHITECTURE.md`
-- `docs/DECISION_MODELS.md`
-
----
-
-## Jev-style primitives
-
-### `choice`
-
-Caller supplies a closed set of options and descriptions.
-
-Example:
-
-```text
-plausible
-data_error
-market_outlier
-misleading_or_bait
-ambiguous_mixed
-```
-
-Each option becomes an NLI hypothesis. The decision engine returns a probability distribution only over these options.
-
-### `noul`
-
-Binary bounded decision.
-
-The engine explicitly evaluates:
-
-```text
-no
-yes
-```
-
-and returns:
-
-```text
-P(yes)
-```
-
-The housing pipeline uses independent noul questions for:
-
-- bait/misleading evidence;
-- data-error evidence;
-- manual-review need.
-
-### `score`
-
-Ordered levels become bounded candidates.
-
-For consistency:
-
-```text
-0 major contradictions
-1 important inconsistencies
-2 ambiguous/minor mismatch
-3 mostly consistent
-4 strongly consistent
-```
-
-After the option distribution is obtained:
-
-```text
-score = Σ_k k × P(level_k)
-```
-
----
+The native action-head probability is not used as a trust gate.
 
 ## Evidence firewall
 
-Not every decision question sees every signal.
+Different decisions see different evidence.
 
-This is deliberate.
+### Content / integrity pack
 
-### Bait/misleading decision
+Sees ad text, structured fields and deterministic consistency evidence. It does not see market anomaly.
 
-It sees:
+### Bait / duplicate pack
 
-- title and description;
-- structured fields;
-- cross-field contradictions;
-- duplicate graph;
-- duplicate neighborhood/price inconsistencies.
+Sees content plus duplicate-graph evidence. It does **not** see single-listing market anomaly or OOF price residual. This blocks the shortcut `cheap => fraud`.
 
-It **does not see the single-listing market anomaly / OOF price residual**.
+### Market pack
 
-This prevents the shortcut:
+Sees structured property facts and market statistics, not persuasive ad copy.
 
-```text
-cheap listing → fraud
-```
+### Full pack
 
-### Data-error / consistency decision
+Sees all evidence and is used only for final disposition and whether a human should review the row.
 
-It sees the listing content and structured-field mismatch evidence, not unrelated market evidence.
+## Trust stages
 
-### Primary disposition / manual review
+Laya Multilingual is intentionally not given full influence zero-shot. The default config is:
 
-These can see the full evidence state.
+    decision:
+      trust_stage: bootstrap
+    scoring:
+      bootstrap_decision_multiplier: 0.25
+      calibrated_decision_multiplier: 0.45
+      adapted_decision_multiplier: 1.0
 
-This separation makes the decision semantics more auditable and reduces circular reasoning.
+`bootstrap` is for collecting/triaging labels with the base multilingual checkpoint. `calibrated` is for a checkpoint whose probabilities were fitted on held-out Fatemi labels. `adapted` should only be used after domain fine-tuning plus held-out evaluation. Model confidence cannot bypass this cap.
+## Selective prediction
 
----
+Laya is allowed to abstain. v0.4 computes:
+
+- `decision_effective_confidence`;
+- `decision_order_stability`;
+- `decision_coherence_score`.
+
+If thresholds fail, `decision_abstain=True`. Abstention increases review priority; it does not increase fraud suspicion directly.
+
+## Three independent output concepts
+
+### `data_problem_score`
+
+Likelihood/evidence that the row is internally inconsistent, corrupted, or incorrectly extracted.
+
+### `market_outlier_score`
+
+How unusual the property is relative to local peers and price models.
+
+### `misleading_risk_score`
+
+Evidence compatible with misleading/bait representation, using duplicate contradictions and bounded decision outputs. Market anomaly is intentionally not directly injected here.
+
+`suspicion_score` remains as a backward-compatible alias of `misleading_risk_score`.
+
+### `review_priority_score`
+
+A triage score combining the strongest independent channels, uncertainty, explicit manual-review probability, and a small abstention uplift.
+
+## Decision questions
+
+v0.4 asks bounded questions for:
+
+- `disposition`: plausible / data_error / market_outlier / misleading_or_bait / ambiguous_mixed;
+- `integrity_class`: consistent / extraction_error / listing_claim_conflict / insufficient_evidence;
+- `consistency`: five ordered levels;
+- `duplicate_pattern`: no evidence / normal template reuse / same-property repost / cross-property conflict;
+- `market_status`: typical / moderate outlier / extreme outlier / insufficient context;
+- `bait_evidence`: bounded no/yes;
+- `data_error_evidence`: bounded no/yes;
+- `manual_review`: bounded no/yes.
 
 ## Housing-market logic
 
-Iranian rental listings cannot be treated as one homogeneous price variable.
+Iranian rental contracts are not treated as one homogeneous price variable. The pipeline distinguishes full-deposit, rent-only, mixed and unknown contract styles and evaluates several rent↔deposit equivalence assumptions (25×/30×/35× monthly rent). If anomaly depends strongly on one arbitrary conversion factor, `equivalence_sensitivity` lowers confidence.
 
-The pipeline distinguishes:
+## Calibration and domain adaptation
 
-```text
-full_deposit
-rent_only
-mixed
-unknown
-```
+Raw System-One probabilities are not assumed to be calibrated for Tehran housing.
 
-and creates `contract_rent_share`.
-
-Instead of trusting one fixed deposit/rent conversion assumption, it evaluates multiple assumptions:
-
-```text
-25× monthly rent
-30× monthly rent
-35× monthly rent
-```
-
-The anomaly score uses the median behavior across these assumptions and records:
-
-```text
-equivalence_sensitivity
-```
-
-If a listing looks anomalous only under one arbitrary conversion factor, confidence in that market anomaly is reduced.
-
-Raw rent/deposit peer comparisons are also segmented by contract style.
-
----
-
-## Other anomaly views
-
-### Robust local peers
-
-Hierarchical peer groups:
-
-1. neighborhood + area bucket + rooms
-2. neighborhood + area bucket
-3. neighborhood
-4. global fallback
-
-Median/MAD is used instead of mean/std.
-
-### Isolation Forest
-
-Checks unusual multivariate combinations.
-
-### OOF property-price expectation
-
-A cross-validated `HistGradientBoostingRegressor` predicts equivalent deposit from property characteristics and neighborhood.
-
-Each row is predicted by a fold that did not train on that row.
-
-Importantly, raw rent/deposit are **not** used as predictors for a target algebraically derived from rent/deposit; that target leakage was explicitly removed.
-
-### Local Outlier Factor
-
-LOF uses property characteristics, equivalent price and contract-rent share—not raw rent/deposit as independent coordinates—so full-deposit and rent-heavy contracts are less likely to be falsely flagged merely because of contract structure.
-
-### Duplicate graph
-
-Near-duplicate title/body text creates a graph rather than only pairwise matches.
-
-Per component:
-
-```text
-duplicate_cluster_size
-duplicate_cluster_neighborhoods
-duplicate_cluster_price_span
-duplicate_bait_score
-```
-
-Repeated text alone is not automatically suspicious. Repeated text combined with conflicting neighborhoods/prices is stronger review evidence.
-
----
-
-## Probability calibration
-
-Raw NLI option probabilities are **not automatically real-world calibrated probabilities**.
-
-The review CSV includes blank human-label columns:
-
-```text
-human_disposition
-human_bait
-human_data_error
-human_manual_review
-human_consistency_level
-human_notes
-```
-
-After manually annotating enough rows:
+The review/annotation CSV includes human-label columns for every major decision pack. After annotation:
 
 ```bash
 divar-scanner calibrate \
@@ -343,232 +182,86 @@ divar-scanner calibrate \
   --output config/fatemi_calibration.json
 ```
 
-Then set:
+Question-specific temperature scaling changes probability sharpness, not the winning option.
 
-```yaml
-decision:
-  calibration_file: "config/fatemi_calibration.json"
+Evaluate the labelled bounded decisions on an untouched split:
+
+```bash
+divar-scanner evaluate-decisions \
+  --input outputs/fatemi/heldout_LABELLED.csv \
+  --output outputs/decision_evaluation.json
 ```
 
-The project fits **question-specific temperature scaling** on bounded candidate evidence.
+The evaluator reports accuracy together with NLL, multiclass Brier score, 10-bin ECE, abstention coverage, and selective accuracy on non-abstained rows.
 
-Temperature scaling changes probability sharpness but does not change the winning argmax option.
+For deeper adaptation:
 
-Keep a separate held-out evaluation set. Do not fit calibration and report final performance on the same rows.
+```bash
+divar-scanner export-laya-training \
+  --input outputs/fatemi/decision_annotation_sample_LABELLED.csv \
+  --output data/laya/fatemi_train.jsonl
+```
 
-See `docs/ANNOTATION_GUIDE.md`.
+The exporter uses the same opaque option transport as inference.
 
----
-
-## Colab
+## Google Colab
 
 Open:
 
 https://colab.research.google.com/github/prestigegitserp/divar_scanner/blob/main/colab/Divar_Fatemi_Anomaly_Scanner.ipynb
 
-The notebook:
-
-1. clones into `/content/divar_scanner_repo` to avoid the old namespace collision;
-2. installs `.[decision]`;
-3. asserts the exact package import origin;
-4. prints dependency/GPU diagnostics;
-5. optionally runs a small Persian bounded-decision diagnostic;
-6. crawls and scores listings;
-7. shows the review table and HTML report.
-
-Decision backend options:
-
-```text
-mdeberta-nli
-parsbert-parsinlu
-mbert-parsinlu
-persian-ensemble
-```
-
-For a first run:
+Recommended first run:
 
 ```text
 MAX_LISTINGS = 100
-DECISION_BACKEND = mdeberta-nli
+RUN_DECISION_MODEL = True
+DECISION_BACKEND = laya-multilingual
 DECISION_TOP_K = 30
+EXPLORATION_SAMPLE = 20
+PERMUTATION_PASSES = 2
 ```
 
-A GPU is recommended but the base encoder can run on CPU.
-
----
-
-## The old Colab import bug
-
-Never clone the repository into:
-
-```text
-/content/divar_scanner
-```
-
-because the Python package has the same name.
-
-The notebook uses:
-
-```text
-/content/divar_scanner_repo
-```
-
-and explicitly puts:
-
-```text
-/content/divar_scanner_repo/src
-```
-
-at the front of `sys.path`.
-
-CI also compiles every notebook Python cell to catch malformed escapes/syntax before delivery.
-
----
+The notebook installs `.[decision]`, verifies package origin, prints GPU diagnostics, can run a small Persian wiring diagnostic, then executes the full pipeline.
 
 ## Local install
 
 ```bash
 git clone https://github.com/prestigegitserp/divar_scanner.git divar_scanner_repo
 cd divar_scanner_repo
-
 python -m venv .venv
 source .venv/bin/activate
-
 python -m pip install -e '.[dev,decision]'
 pytest
-python -m divar_scanner.doctor --network
 ```
 
 Run:
 
 ```bash
-divar-scanner run \
-  --config config/fatemi.yaml \
-  --max-listings 200 \
-  --decision-backend mdeberta-nli
+divar-scanner run --config config/fatemi.yaml --max-listings 200 --decision-backend laya-multilingual
 ```
 
-Run without the decision model:
+## Research baselines
 
-```bash
-divar-scanner run --config config/fatemi.yaml --max-listings 200 --no-decision
-```
+The repo retains `mdeberta-nli`, `parsbert-parsinlu`, `mbert-parsinlu`, and `persian-ensemble` only for controlled comparisons. They are non-generative encoder classifiers, but unlike Laya they are not native typed System-One heads.
 
-Analyze an existing normalized dataset:
+OpenJev and Lev are highly relevant references, but their current public implementations use Qwen-derived autoregressive backbones, so they do not satisfy this project's stricter no-autoregressive-LLM-backbone requirement.
 
-```bash
-divar-scanner analyze \
-  --config config/fatemi.yaml \
-  --input listings.parquet
-```
+See:
 
----
-
-## Main output columns
-
-| Column | Meaning |
-|---|---|
-| `data_quality_score` | impossible/missing/cross-field mismatch evidence |
-| `contract_style` | full_deposit / rent_only / mixed / unknown |
-| `equivalence_sensitivity` | sensitivity to rent↔deposit conversion assumptions |
-| `market_anomaly_score` | fused market outlier evidence |
-| `price_model_ratio` | observed / OOF expected equivalent price |
-| `price_model_anomaly_score` | OOF price residual anomaly |
-| `lof_anomaly_score` | local-density anomaly |
-| `duplicate_bait_score` | duplicate-graph contradiction signal |
-| `decision_disposition` | bounded primary disposition |
-| `decision_disposition_probs_json` | closed-set option distribution |
-| `decision_bait_probability` | noul P(yes) |
-| `decision_data_error_probability` | noul P(yes) |
-| `decision_manual_review_probability` | noul P(yes) |
-| `decision_consistency_score` | ordered score normalized to 0–1 |
-| `decision_disposition_confidence` | entropy/neutral/disagreement diagnostic |
-| `uncertainty_score` | disagreement across evidence families |
-| `suspicion_score` | evidence-fused review risk |
-| `review_priority_score` | final triage priority |
-| `flag_reasons` | human-readable reasons |
-
----
-
-## Why not use OpenJev directly?
-
-OpenJev is a very useful architectural reference: it demonstrates a typed, non-generative cross-encoder decision pattern with entailment / contradiction / neutral and probabilities over closed options.
-
-Its current public checkpoints use **Qwen3.5-derived** sequence-classification backbones.
-
-This repository's current design requirement is stricter:
-
-```text
-no free-text generation
-AND
-non-LLM encoder backbone
-```
-
-Therefore OpenJev is treated as a benchmark/reference, while mDeBERTa / ParsBERT NLI are the executable decision backends.
-
----
-
-## What the system does not claim
-
-It does not claim:
-
-- that an outlier is fraud;
-- that a high review score proves deceptive intent;
-- that NLI zero-shot probabilities are calibrated without target-domain labels;
-- that this reimplements TypeSafe Jev's proprietary RLCD training;
-- that one neighborhood snapshot is sufficient for production fraud detection.
-
-The strongest next improvements are longitudinal snapshots, human labels, calibration, threshold validation, and independent evaluation.
-
----
+- `docs/SYSTEM_ONE_RESEARCH.md`
+- `docs/DECISION_ARCHITECTURE.md`
+- `docs/DECISION_MODELS.md`
 
 ## Responsible crawling
 
-The crawler:
+The crawler uses public listing/search responses, caches responses, rate-limits requests, stops on 401/403/429, does not bypass CAPTCHA/access controls, does not use OTP/login/contact-info endpoints, and redacts phone-like strings by default.
 
-- uses public listing/search responses;
-- caches responses;
-- rate-limits requests;
-- stops on 401/403/429;
-- does not bypass CAPTCHA/access controls;
-- does not use OTP/login/contact-info endpoints;
-- redacts phone-like strings from listing descriptions by default.
+## CI
 
-Divar's web schema is not a stable public contract; schema changes should be handled by the adapter rather than more aggressive crawling.
+CI covers Python 3.10/3.11/3.12, packaging/import checks, bounded decision math, Laya opaque transport and permutation stability, calibration, fine-tune export, synthetic end-to-end pipeline, YAML parsing, Colab code compilation, and simulated Colab path layout.
 
----
-
-## Tests / CI
-
-CI currently checks:
-
-- Python 3.10 / 3.11 / 3.12;
-- packaging/import path;
-- unit tests;
-- bounded `choice / score / noul` math;
-- Persian model registry/label mapping;
-- ensemble disagreement behavior;
-- temperature calibration;
-- synthetic end-to-end pipeline;
-- YAML parsing;
-- every Colab Python cell via `compile()`;
-- simulated Colab clone layout.
-
-The heavy model weights are not downloaded in ordinary CI; the notebook's Persian diagnostic is the runtime model check.
-
----
-
-## References
-
-- TypeSafe Jev guides/API: https://www.typesafeai.org/guides/choice-score-noul
-- OpenJev: https://huggingface.co/AlexWortega/openjev
-- mDeBERTa multilingual NLI: https://huggingface.co/MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7
-- ParsBERT ParsiNLU entailment: https://huggingface.co/persiannlp/parsbert-base-parsinlu-entailment
-- ParsiNLU: https://github.com/persiannlp/parsinlu
-- Temperature scaling: Guo et al., 2017, *On Calibration of Modern Neural Networks*
+Heavy model weights are not downloaded in ordinary CI.
 
 ## License
 
-Project code: MIT.
-
-Model licenses are separate. In particular, the ParsiNLU ParsBERT/mBERT checkpoints are marked `CC-BY-NC-SA-4.0`; verify compatibility with your use case before deployment.
+Project code: MIT. Model licenses are separate. Laya is Apache-2.0; ParsiNLU baseline checkpoints have more restrictive non-commercial/share-alike terms.

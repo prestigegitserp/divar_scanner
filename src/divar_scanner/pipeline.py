@@ -35,40 +35,39 @@ def _as_float(row: pd.Series, name: str) -> float:
 
 def _reason(row: pd.Series, config: Config) -> str:
     reasons: list[str] = []
-    if _as_float(row, "data_quality_score") >= 0.42:
-        reasons.append("data/field inconsistency")
-    if _as_float(row, "price_model_anomaly_score") >= 0.55:
+    if _as_float(row, "data_problem_score") >= 0.55:
+        reasons.append(f"data-quality risk={_as_float(row, 'data_problem_score'):.2f}")
+    if _as_float(row, "market_outlier_score") >= 0.55:
         ratio = row.get("price_model_ratio")
         if pd.notna(ratio):
-            reasons.append(f"OOF price residual (actual/expected={float(ratio):.2f})")
+            reasons.append(
+                f"market outlier={_as_float(row, 'market_outlier_score'):.2f} "
+                f"(actual/expected={float(ratio):.2f})"
+            )
         else:
-            reasons.append("OOF price residual")
-    if _as_float(row, "lof_anomaly_score") >= 0.92:
-        reasons.append("low-density numeric outlier")
-    if _as_float(row, "market_anomaly_score") >= 0.55:
-        reasons.append("unusual vs local market")
+            reasons.append(f"market outlier={_as_float(row, 'market_outlier_score'):.2f}")
+    if _as_float(row, "misleading_risk_score") >= 0.50:
+        reasons.append(f"misleading/bait evidence={_as_float(row, 'misleading_risk_score'):.2f}")
     if _as_float(row, "duplicate_bait_score") >= 0.50:
         reasons.append(
-            f"duplicate cluster inconsistency (n={int(_as_float(row, 'duplicate_cluster_size'))})"
+            f"duplicate-cluster inconsistency (n={int(_as_float(row, 'duplicate_cluster_size'))})"
         )
 
     if bool(row.get("decision_evaluated", False)):
-        bait = _as_float(row, "decision_bait_probability")
-        data_error = _as_float(row, "decision_data_error_probability")
-        review = _as_float(row, "decision_manual_review_probability")
-        if bait >= 0.60:
-            reasons.append(f"bounded decision: bait/misleading p={bait:.2f}")
-        if data_error >= 0.65:
-            reasons.append(f"bounded decision: data-error p={data_error:.2f}")
-        if review >= 0.65:
-            reasons.append(f"bounded decision: manual-review p={review:.2f}")
         disposition = str(row.get("decision_disposition", "") or "")
         if disposition and disposition not in {"plausible", "market_outlier"}:
             reasons.append(f"decision:{disposition}")
+        if bool(row.get("decision_abstain", False)):
+            why = str(row.get("decision_abstain_reasons", "") or "low decision reliability")
+            reasons.append(f"System-One abstained:{why}")
+        elif _as_float(row, "decision_effective_confidence") < 0.68:
+            reasons.append(
+                f"decision confidence={_as_float(row, 'decision_effective_confidence'):.2f}"
+            )
 
-    if _as_float(row, "uncertainty_score") >= 0.32:
-        reasons.append("detectors disagree → human review")
-    return "; ".join(dict.fromkeys(reasons)) or "low combined review risk"
+    if _as_float(row, "uncertainty_score") >= 0.40:
+        reasons.append("evidence families disagree / need human review")
+    return "; ".join(dict.fromkeys(reasons)) or "low review priority"
 
 
 def _rowwise_weighted_mean(
@@ -91,7 +90,43 @@ def _available_std(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
     return values.std(axis=1, skipna=True).fillna(0.0)
 
 
+def _decision_trust_multiplier(config: Config) -> tuple[str, float]:
+    stage = str(config.get("decision.trust_stage", "bootstrap")).strip().lower()
+    key_by_stage = {
+        "bootstrap": "bootstrap_decision_multiplier",
+        "calibrated": "calibrated_decision_multiplier",
+        "adapted": "adapted_decision_multiplier",
+    }
+    if stage not in key_by_stage:
+        stage = "bootstrap"
+    multiplier = float(config.get(f"scoring.{key_by_stage[stage]}", 0.25))
+    return stage, float(np.clip(multiplier, 0.0, 1.0))
+
+
+def _numeric_series(
+    frame: pd.DataFrame,
+    column: str,
+    default: float = np.nan,
+) -> pd.Series:
+    if column not in frame:
+        return pd.Series(default, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce").astype(float)
+
+
+def _json_probability(frame: pd.DataFrame, column: str, key: str) -> pd.Series:
+    def parse(value: Any) -> float:
+        try:
+            payload = json.loads(str(value or "{}"))
+            return float(payload.get(key, np.nan))
+        except Exception:
+            return np.nan
+    if column not in frame:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+    return frame[column].map(parse).astype(float)
+
+
 def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
+    """Fuse independent evidence channels without equating anomaly with deception."""
     out = df.copy()
     s = config.section("scoring")
     threshold = float(config.get("anomaly.duplicate_similarity_threshold", 0.88))
@@ -105,56 +140,130 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     bait_graph = pd.to_numeric(out.get("duplicate_bait_score", 0), errors="coerce").fillna(0)
     out["duplicate_risk"] = np.maximum(nearest_dup, bait_graph)
 
-    # The bounded decision model contributes only when that row was actually evaluated.
-    decision_bait = pd.to_numeric(
-        out.get("decision_bait_probability", np.nan), errors="coerce"
-    )
-    decision_consistency = pd.to_numeric(
-        out.get("decision_consistency_score", np.nan), errors="coerce"
-    )
-    decision_conflict = 1.0 - decision_consistency
-    out["decision_risk_score"] = np.where(
-        pd.to_numeric(out.get("decision_evaluated", False), errors="coerce").fillna(0).astype(bool),
-        np.maximum(decision_bait, 0.35 * decision_conflict),
-        np.nan,
-    )
+    evaluated = _numeric_series(out, "decision_evaluated", 0.0).fillna(0).astype(bool)
+    decision_conf = _numeric_series(
+        out, "decision_effective_confidence", np.nan
+    ).clip(0, 1)
+    trust_stage, trust_multiplier = _decision_trust_multiplier(config)
+    confidence_weight = (decision_conf * trust_multiplier).where(evaluated, np.nan)
 
-    weights = {
-        "data_quality_score": float(s.get("data_quality_weight", 0.22)),
-        "market_anomaly_score": float(s.get("market_anomaly_weight", 0.38)),
-        "duplicate_risk": float(s.get("duplicate_weight", 0.16)),
-        "decision_risk_score": float(s.get("decision_weight", 0.24)),
-    }
-    suspicion, weight_sum = _rowwise_weighted_mean(out, weights)
-    out["suspicion_score"] = np.clip(suspicion, 0, 1)
-    out["evidence_weight_sum"] = weight_sum
+    # Channel 1 — data correctness. This is not fraud.
+    data_decision = _numeric_series(
+        out, "decision_data_error_probability", np.nan
+    )
+    integrity_error = (
+        _json_probability(out, "decision_integrity_probs_json", "extraction_error").fillna(0)
+        + _json_probability(out, "decision_integrity_probs_json", "listing_claim_conflict").fillna(0)
+    ).clip(0, 1)
+    data_model = (0.55 * data_decision + 0.45 * integrity_error).where(evaluated)
+    out["data_problem_score"], _ = _rowwise_weighted_mean(
+        pd.DataFrame(
+            {
+                "rule": pd.to_numeric(out["data_quality_score"], errors="coerce").fillna(0),
+                "model": data_model * confidence_weight,
+            },
+            index=out.index,
+        ),
+        {"rule": float(s.get("data_rule_weight", 0.72)), "model": float(s.get("data_decision_weight", 0.28))},
+    )
+    out["data_problem_score"] = out["data_problem_score"].clip(0, 1)
 
-    component_cols = [
-        "data_quality_score",
-        "market_anomaly_score",
-        "duplicate_risk",
-        "decision_risk_score",
-    ]
+    # Channel 2 — market outlier. Kept independent from deception.
+    market_decision = (
+        _json_probability(out, "decision_market_status_probs_json", "moderate_outlier").fillna(0)
+        + _json_probability(out, "decision_market_status_probs_json", "extreme_outlier").fillna(0)
+    ).clip(0, 1).where(evaluated)
+    market_frame = pd.DataFrame(
+        {
+            "stats": pd.to_numeric(out["market_anomaly_score"], errors="coerce").fillna(0),
+            "model": market_decision * confidence_weight,
+        },
+        index=out.index,
+    )
+    out["market_outlier_score"], _ = _rowwise_weighted_mean(
+        market_frame,
+        {"stats": float(s.get("market_stat_weight", 0.82)), "model": float(s.get("market_decision_weight", 0.18))},
+    )
+    out["market_outlier_score"] = out["market_outlier_score"].clip(0, 1)
+
+    # Channel 3 — misleading/bait. Deliberately receives no single-listing market score.
+    decision_bait = _numeric_series(
+        out, "decision_bait_probability", np.nan
+    ).where(evaluated)
+    disposition_bait = _json_probability(
+        out, "decision_disposition_probs_json", "misleading_or_bait"
+    ).where(evaluated)
+    duplicate_conflict = _json_probability(
+        out, "decision_duplicate_pattern_probs_json", "cross_property_conflict"
+    ).where(evaluated)
+    bounded_bait = pd.concat(
+        [decision_bait, disposition_bait, duplicate_conflict], axis=1
+    ).max(axis=1, skipna=True).where(evaluated)
+    misleading_frame = pd.DataFrame(
+        {
+            "duplicate": out["duplicate_risk"],
+            "decision": bounded_bait * confidence_weight,
+        },
+        index=out.index,
+    )
+    out["misleading_risk_score"], _ = _rowwise_weighted_mean(
+        misleading_frame,
+        {
+            "duplicate": float(s.get("misleading_duplicate_weight", 0.42)),
+            "decision": float(s.get("misleading_decision_weight", 0.58)),
+        },
+    )
+    out["misleading_risk_score"] = out["misleading_risk_score"].clip(0, 1)
+    # Backwards-compatible name now has a precise meaning: deception/bait suspicion only.
+    out["suspicion_score"] = out["misleading_risk_score"]
+
+    channels = ["data_problem_score", "market_outlier_score", "misleading_risk_score"]
+    out["channel_disagreement"] = np.clip(_available_std(out, channels) * 2.0, 0, 1)
+
+    model_uncertainty = pd.Series(0.0, index=out.index)
+    model_uncertainty.loc[evaluated] = (
+        1.0 - decision_conf.loc[evaluated].fillna(0.0)
+    ).clip(0, 1)
+    coherence_series = _numeric_series(
+        out, "decision_coherence_score", np.nan
+    )
+    coherence_uncertainty = pd.Series(0.0, index=out.index)
+    coherence_uncertainty.loc[evaluated] = (
+        1.0 - coherence_series.loc[evaluated].fillna(0.0)
+    ).clip(0, 1)
     out["uncertainty_score"] = np.clip(
-        _available_std(out, component_cols) * 2.0,
+        0.45 * model_uncertainty
+        + 0.25 * coherence_uncertainty
+        + 0.30 * out["channel_disagreement"],
         0,
         1,
     )
 
-    review_prob = pd.to_numeric(
-        out.get("decision_manual_review_probability", np.nan), errors="coerce"
-    )
-    review_component = review_prob.where(review_prob.notna(), 0.0)
+    channel_values = out[channels].to_numpy(dtype=float)
+    sorted_channels = np.sort(channel_values, axis=1)
+    strongest = sorted_channels[:, -1]
+    second = sorted_channels[:, -2] if len(channels) > 1 else strongest
+    review_prob = _numeric_series(
+        out, "decision_manual_review_probability", np.nan
+    ).fillna(0.0)
+    abstain = out.get("decision_abstain", pd.Series(False, index=out.index)).fillna(False).astype(bool)
+    abstain_uplift = abstain.astype(float) * float(s.get("abstain_review_uplift", 0.08))
+
     out["review_priority_score"] = np.clip(
-        0.80 * out["suspicion_score"]
-        + 0.12 * out["uncertainty_score"]
-        + 0.08 * review_component,
+        0.52 * strongest
+        + 0.20 * second
+        + 0.16 * out["uncertainty_score"]
+        + 0.12 * review_prob
+        + abstain_uplift,
         0,
         1,
     )
+    out["overall_review_risk"] = out["review_priority_score"]
+    out["decision_trust_stage"] = trust_stage
+    out["decision_trust_multiplier"] = trust_multiplier
 
-    review_t = float(s.get("review_threshold", 0.58))
-    high_t = float(s.get("high_risk_threshold", 0.78))
+    review_t = float(s.get("review_threshold", 0.55))
+    high_t = float(s.get("high_risk_threshold", 0.75))
     out["risk_band"] = np.select(
         [
             out["review_priority_score"] >= high_t,
@@ -165,7 +274,7 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     )
     out["flag_reasons"] = [_reason(row, config) for _, row in out.iterrows()]
     return out.sort_values(
-        ["review_priority_score", "suspicion_score", "market_anomaly_score"],
+        ["review_priority_score", "misleading_risk_score", "market_outlier_score"],
         ascending=False,
     ).reset_index(drop=True)
 
@@ -188,7 +297,7 @@ def run_pipeline(
     config = load_config(config_path)
     meta: dict[str, Any] = {
         "project": config.get("project.name", "Divar Scanner"),
-        "pipeline_version": "0.3.0",
+        "pipeline_version": "0.4.0",
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": str(config_path),
     }
@@ -238,6 +347,9 @@ def run_pipeline(
         review_df = df[df["risk_band"].isin(["review", "high"])].copy()
         for label_col in (
             "human_disposition",
+            "human_integrity_class",
+            "human_duplicate_pattern",
+            "human_market_status",
             "human_bait",
             "human_data_error",
             "human_manual_review",
@@ -254,6 +366,9 @@ def run_pipeline(
         annotation_df = df[df["decision_evaluated"] == True].copy()  # noqa: E712
         for label_col in (
             "human_disposition",
+            "human_integrity_class",
+            "human_duplicate_pattern",
+            "human_market_status",
             "human_bait",
             "human_data_error",
             "human_manual_review",

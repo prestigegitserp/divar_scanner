@@ -659,6 +659,7 @@ def create_decision_engine(
             max_length=int(decision_config.get("max_length", 1024)),
             batch_size=int(decision_config.get("batch_size", 24)),
             temperatures=temperatures,
+            permutation_passes=int(decision_config.get("permutation_passes", 2)),
         )
         return engine, specs, temperatures
 
@@ -711,9 +712,7 @@ def build_listing_state(row: pd.Series, *, view: str = "full") -> str:
     title = str(row.get("title", "") or "").strip()
     neighborhood = str(row.get("neighborhood", "") or "").strip()
 
-    identity = [
-        f"عنوان آگهی: {title}",
-        f"توضیحات آگهی: {description}",
+    structured_identity = [
         f"محله: {neighborhood or 'نامشخص'}",
         f"متراژ ساختاریافته: {_fmt_num(_num(row, 'area_m2'), 0)} متر",
         f"اتاق ساختاریافته: {_fmt_num(_num(row, 'rooms'), 0)}",
@@ -722,48 +721,57 @@ def build_listing_state(row: pd.Series, *, view: str = "full") -> str:
         f"آسانسور ساختاریافته: {row.get('elevator', 'ناموجود')}",
         f"انباری ساختاریافته: {row.get('storage', 'ناموجود')}",
     ]
+    text_identity = [
+        f"عنوان آگهی: {title}",
+        f"توضیحات آگهی: {description}",
+        *structured_identity,
+    ]
     consistency = [
         "شواهد سازگاری/کیفیت داده:",
         f"- data_quality_score: {_fmt_num(_num(row, 'data_quality_score'))}",
         f"- area_text_conflict: {_fmt_num(_num(row, 'area_text_conflict'))}",
         f"- rooms_text_conflict: {_fmt_num(_num(row, 'rooms_text_conflict'))}",
         f"- amenity_text_conflict: {_fmt_num(_num(row, 'amenity_text_conflict'))}",
+        f"- missing_fraction: {_fmt_num(_num(row, 'missing_fraction'))}",
     ]
     duplicate = [
-        "شواهد تکرار و بازنمایی:",
+        "شواهد تکرار/بازنمایی:",
         f"- nearest duplicate similarity: {_fmt_num(_num(row, 'duplicate_similarity'))}",
         f"- duplicate cluster size: {_fmt_num(_num(row, 'duplicate_cluster_size'), 0)}",
-        f"- duplicate cluster neighborhood count: {_fmt_num(_num(row, 'duplicate_cluster_neighborhoods'), 0)}",
-        f"- duplicate cluster price inconsistency: {_fmt_num(_num(row, 'duplicate_cluster_price_span'))}",
+        f"- cluster neighborhood count: {_fmt_num(_num(row, 'duplicate_cluster_neighborhoods'), 0)}",
+        f"- cluster price inconsistency: {_fmt_num(_num(row, 'duplicate_cluster_price_span'))}",
         f"- duplicate bait score: {_fmt_num(_num(row, 'duplicate_bait_score'))}",
     ]
     market = [
-        "شواهد بازار (برای تشخیص outlier، نه اثبات فریب):",
+        "شواهد بازار؛ فقط برای تشخیص outlier و نه استنباط قصد فریب:",
         f"- سبک قرارداد: {row.get('contract_style', 'unknown')}",
         f"- ودیعه: {_fmt_num(_num(row, 'deposit_toman'), 0)} تومان",
         f"- اجاره ماهانه: {_fmt_num(_num(row, 'rent_monthly_toman'), 0)} تومان",
         f"- market_anomaly_score: {_fmt_num(_num(row, 'market_anomaly_score'))}",
+        f"- robust_market_anomaly: {_fmt_num(_num(row, 'robust_market_anomaly'))}",
         f"- OOF price actual/expected ratio: {_fmt_num(_num(row, 'price_model_ratio'))}",
         f"- OOF price anomaly: {_fmt_num(_num(row, 'price_model_anomaly_score'))}",
         f"- LOF anomaly: {_fmt_num(_num(row, 'lof_anomaly_score'))}",
-        f"- conversion sensitivity: {_fmt_num(_num(row, 'equivalence_sensitivity'))}",
+        f"- equivalence sensitivity: {_fmt_num(_num(row, 'equivalence_sensitivity'))}",
     ]
 
     if view == "content":
-        sections = identity + [""] + consistency
-    elif view == "bait":
-        # Deliberately hide single-listing market anomaly/price-model evidence from the
-        # misleading/bait judgment. This prevents "cheap => fraud" shortcut learning.
-        sections = identity + [""] + consistency + [""] + duplicate
+        sections = text_identity + [""] + consistency
+    elif view in {"bait", "duplicate"}:
+        # Evidence firewall: do not expose single-listing market anomaly to deception decisions.
+        sections = text_identity + [""] + consistency + [""] + duplicate
+    elif view == "market":
+        # Another firewall: market-position judgment sees structured facts/statistics, not persuasive copy.
+        sections = structured_identity + [""] + market
     elif view == "full":
-        sections = identity + [""] + consistency + [""] + duplicate + [""] + market
+        sections = text_identity + [""] + consistency + [""] + duplicate + [""] + market
     else:
         raise ValueError(f"Unknown listing-state view: {view!r}")
 
     sections += [
         "",
-        "قاعدهٔ تصمیم: قیمت غیرعادی به‌تنهایی نشانهٔ فریب نیست. "
-        "خطای داده/پارسینگ را از آگهی واقعاً نامعمول و از شواهد گمراه‌کنندگی جدا کن.",
+        "قاعدهٔ تصمیم: outlier بودن، ارزان بودن یا گران بودن به‌تنهایی نشانهٔ تقلب نیست. "
+        "خطای استخراج، ناسازگاری ادعاها، الگوی بازنشر و وضعیت بازار را مستقل ارزیابی کن.",
     ]
     return "\n".join(str(x) for x in sections)
 
@@ -772,65 +780,85 @@ def listing_questions() -> dict[str, dict[str, Any]]:
     return {
         "disposition": {
             "type": "choice",
-            "instructions": "نوع اصلی وضعیت این آگهی چیست؟",
+            "instructions": "با جمع‌بندی همهٔ شواهد، وضعیت اصلی این آگهی چیست؟",
             "criteria": {
-                "plausible": (
-                    "متن و فیلدها عمدتاً سازگارند و شواهد معناداری برای مشکل وجود ندارد."
-                ),
-                "data_error": (
-                    "تناقض‌ها بیشتر با خطای پارسینگ، دادهٔ ساختاریافتهٔ خراب یا اشتباه ثبت توضیح داده می‌شوند."
-                ),
-                "market_outlier": (
-                    "آگهی از نظر داده منسجم است اما قیمت یا ترکیب ویژگی‌ها نسبت به بازار غیرعادی است؛ "
-                    "بدون شواهد کافی از فریب."
-                ),
+                "plausible": "شواهد غالب با یک آگهی عادی و منسجم سازگار است.",
+                "data_error": "شواهد غالب بیشتر خطای داده، استخراج یا mismatch فیلدها را نشان می‌دهد.",
+                "market_outlier": "آگهی منسجم است اما نسبت به بازار/ویژگی‌های مشابه outlier محسوسی دارد.",
                 "misleading_or_bait": (
-                    "فراتر از صرفاً قیمت پرت، تناقض یا الگوی تکراری معناداری وجود دارد که با "
-                    "آگهی گمراه‌کننده/طعمه‌ای سازگار است."
+                    "شواهدی مستقل از صرف قیمت پرت برای بازنمایی نادرست، bait یا گمراه‌کنندگی وجود دارد."
                 ),
-                "ambiguous_mixed": (
-                    "چند نوع شواهد با هم رقابت می‌کنند و هیچ‌کدام به‌عنوان وضعیت اصلی غالب نیست."
-                ),
+                "ambiguous_mixed": "چند توضیح رقیب باقی مانده و تصمیم قابل اتکایی بین آن‌ها نیست.",
+            },
+        },
+        "integrity_class": {
+            "type": "choice",
+            "instructions": "مشکل سازگاری متن و فیلدهای ساختاریافته را چگونه طبقه‌بندی می‌کنی؟",
+            "criteria": {
+                "consistent": "متن و فیلدهای اصلی با هم سازگارند.",
+                "extraction_error": "اختلاف‌ها بیشتر شبیه خطای parser/crawler یا extraction هستند.",
+                "listing_claim_conflict": "خود ادعاهای آگهی با فیلدهای ساختاریافته تضاد معنادار دارند.",
+                "insufficient_evidence": "اطلاعات برای تعیین نوع ناسازگاری کافی نیست.",
             },
         },
         "consistency": {
             "type": "score",
             "instructions": "سازگاری داخلی متن آگهی با فیلدهای ساختاریافته را ارزیابی کن.",
             "criteria": [
-                "تناقض‌های جدی و چندگانه بین متن و فیلدها",
+                "تناقض‌های جدی و چندگانه",
                 "چند ناسازگاری مهم",
                 "ابهام یا ناسازگاری محدود",
                 "عمدتاً سازگار",
                 "کاملاً و به‌وضوح سازگار",
             ],
         },
+        "duplicate_pattern": {
+            "type": "choice",
+            "instructions": "الگوی تکرار این آگهی با نزدیک‌ترین نمونه‌ها چگونه تفسیر می‌شود؟",
+            "criteria": {
+                "no_duplicate_evidence": "شباهت کافی برای نتیجه‌گیری دربارهٔ بازنشر وجود ندارد.",
+                "normal_template_reuse": "شباهت بیشتر با متن قالبی/رایج سازگار است و تضاد مهمی دیده نمی‌شود.",
+                "likely_same_property_repost": "احتمالاً همان ملک یا همان آگهی با تغییرات محدود دوباره منتشر شده است.",
+                "cross_property_conflict": (
+                    "متن بسیار مشابه همراه با اختلاف مهم در محله/قیمت/مشخصات دیده می‌شود."
+                ),
+            },
+        },
+        "market_status": {
+            "type": "choice",
+            "instructions": "با توجه به شواهد آماری ارائه‌شده، جایگاه بازار این ملک چیست؟",
+            "criteria": {
+                "typical": "با peerهای محلی و مدل قیمت سازگار یا نزدیک به محدودهٔ معمول است.",
+                "moderate_outlier": "انحراف قابل توجه اما نه بسیار شدید از peerها/مدل قیمت دیده می‌شود.",
+                "extreme_outlier": "چند سیگنال مستقل بازار انحراف شدید را تأیید می‌کنند.",
+                "insufficient_context": "peer/context کافی برای قضاوت قابل اتکا وجود ندارد.",
+            },
+        },
         "bait_evidence": {
             "type": "noul",
             "instructions": (
-                "آیا شواهدی فراتر از صرفاً قیمت غیرعادی وجود دارد که این آگهی "
-                "گمراه‌کننده، طعمه‌ای یا بازنمایی نادرست ملک باشد؟"
+                "آیا شواهدی مستقل از صرفاً قیمت غیرعادی وجود دارد که آگهی "
+                "گمراه‌کننده، bait یا بازنمایی نادرست ملک باشد؟"
             ),
             "criteria": {
                 "no": "شواهد فعلی برای چنین نتیجه‌ای کافی نیست.",
-                "yes": "تناقض‌های معنایی، تکرار مشکوک یا ادعاهای ناسازگار چنین احتمالی را تقویت می‌کند.",
+                "yes": "تناقض ادعاها یا الگوی بازنشر متناقض چنین احتمالی را تقویت می‌کند.",
             },
         },
         "data_error_evidence": {
             "type": "noul",
-            "instructions": (
-                "آیا مشکل اصلی این ردیف احتمالاً خطای داده، parser یا ناسازگاری فیلدهای استخراج‌شده است؟"
-            ),
+            "instructions": "آیا شواهد فعلی به خطای داده، parser یا extraction اشاره می‌کند؟",
             "criteria": {
-                "no": "دادهٔ ساختاریافته مشکل آشکار فنی/استخراجی ندارد.",
-                "yes": "شواهد به خطای استخراج، mismatch فیلدها یا دادهٔ خراب اشاره می‌کند.",
+                "no": "شواهد کافی برای خطای فنی/استخراجی وجود ندارد.",
+                "yes": "mismatchها با خطای استخراج یا دادهٔ خراب سازگارند.",
             },
         },
         "manual_review": {
             "type": "noul",
-            "instructions": "آیا این آگهی قبل از اعتماد باید توسط انسان بازبینی شود؟",
+            "instructions": "آیا این آگهی قبل از اعتماد/استفاده باید توسط انسان بازبینی شود؟",
             "criteria": {
-                "no": "شواهد فعلی برای بازبینی دستی فوری کافی نیست.",
-                "yes": "ابهام، تناقض یا ریسک ترکیبی بازبینی انسانی را توجیه می‌کند.",
+                "no": "شواهد و عدم‌قطعیت فعلی بازبینی فوری را توجیه نمی‌کند.",
+                "yes": "شدت شواهد یا عدم‌قطعیت بازبینی انسانی را توجیه می‌کند.",
             },
         },
     }
@@ -838,20 +866,125 @@ def listing_questions() -> dict[str, dict[str, Any]]:
 
 def _empty_decision_columns(out: pd.DataFrame) -> pd.DataFrame:
     out = out.copy()
-    out["decision_evaluated"] = False
-    out["decision_sampling_reason"] = ""
-    out["decision_backend"] = ""
-    out["decision_disposition"] = ""
-    out["decision_disposition_confidence"] = np.nan
-    out["decision_answer_confidence"] = np.nan
-    out["decision_disposition_probs_json"] = ""
-    out["decision_bait_probability"] = np.nan
-    out["decision_data_error_probability"] = np.nan
-    out["decision_manual_review_probability"] = np.nan
-    out["decision_consistency_score"] = np.nan
-    out["decision_consistency_confidence"] = np.nan
-    out["decision_raw_json"] = ""
+    defaults: dict[str, Any] = {
+        "decision_evaluated": False,
+        "decision_sampling_reason": "",
+        "decision_backend": "",
+        "decision_disposition": "",
+        "decision_disposition_confidence": np.nan,
+        "decision_answer_confidence": np.nan,
+        "decision_disposition_probs_json": "",
+        "decision_integrity_class": "",
+        "decision_integrity_probs_json": "",
+        "decision_duplicate_pattern": "",
+        "decision_duplicate_pattern_probs_json": "",
+        "decision_market_status": "",
+        "decision_market_status_probs_json": "",
+        "decision_bait_probability": np.nan,
+        "decision_data_error_probability": np.nan,
+        "decision_manual_review_probability": np.nan,
+        "decision_consistency_score": np.nan,
+        "decision_consistency_confidence": np.nan,
+        "decision_order_stability": np.nan,
+        "decision_coherence_score": np.nan,
+        "decision_effective_confidence": np.nan,
+        "decision_abstain": False,
+        "decision_abstain_reasons": "",
+        "decision_raw_json": "",
+    }
+    for column, value in defaults.items():
+        out[column] = value
     return out
+
+
+def _stratified_exploration(
+    frame: pd.DataFrame,
+    n: int,
+    *,
+    score_col: str,
+    seed: int,
+    bins: int = 5,
+) -> pd.DataFrame:
+    if n <= 0 or frame.empty:
+        return frame.iloc[0:0]
+    n = min(int(n), len(frame))
+    ordered = frame.sort_values(score_col)
+    groups = [g for g in np.array_split(ordered.index.to_numpy(), min(bins, len(ordered))) if len(g)]
+    rng = np.random.default_rng(seed)
+    selected: list[Any] = []
+    while len(selected) < n:
+        changed = False
+        for group in groups:
+            remaining = [idx for idx in group.tolist() if idx not in selected]
+            if remaining and len(selected) < n:
+                selected.append(remaining[int(rng.integers(0, len(remaining)))])
+                changed = True
+        if not changed:
+            break
+    return frame.loc[selected]
+
+
+def _answer_stability(answer: dict[str, Any]) -> float:
+    try:
+        return float(answer.get("diagnostics", {}).get("order_stability", 1.0))
+    except Exception:
+        return 1.0
+
+
+def _answer_effective_confidence(answer: dict[str, Any]) -> float:
+    for key in ("effective_confidence", "answer_confidence", "confidence"):
+        try:
+            value = answer.get(key)
+            if value is not None:
+                return float(np.clip(float(value), 0.0, 1.0))
+        except Exception:
+            pass
+    return 0.0
+
+
+def _decision_quality(answer_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    disp = answer_map["disposition"]
+    integrity = answer_map["integrity_class"]
+    duplicate = answer_map["duplicate_pattern"]
+    market = answer_map["market_status"]
+    consistency = answer_map["consistency"]
+    bait = answer_map["bait_evidence"]
+    data_error = answer_map["data_error_evidence"]
+
+    disp_p = disp["probabilities"]
+    int_p = integrity["probabilities"]
+    dup_p = duplicate["probabilities"]
+    market_p = market["probabilities"]
+
+    p_data = float(data_error["noul"])
+    p_bait = float(bait["noul"])
+    p_integrity_problem = float(
+        int_p.get("extraction_error", 0.0) + int_p.get("listing_claim_conflict", 0.0)
+    )
+    p_dup_conflict = float(dup_p.get("cross_property_conflict", 0.0))
+    p_market = float(
+        market_p.get("moderate_outlier", 0.0) + market_p.get("extreme_outlier", 0.0)
+    )
+    consistency_bad = float(1.0 - consistency["normalized_score"])
+
+    agreements = [
+        1.0 - abs(float(disp_p.get("data_error", 0.0)) - 0.5 * (p_data + p_integrity_problem)),
+        1.0 - abs(float(disp_p.get("misleading_or_bait", 0.0)) - max(p_bait, p_dup_conflict)),
+        1.0 - abs(float(disp_p.get("market_outlier", 0.0)) - p_market),
+        1.0 - abs(p_data - 0.5 * (consistency_bad + p_integrity_problem)),
+    ]
+    coherence = float(np.clip(np.mean(agreements), 0.0, 1.0))
+
+    answers = list(answer_map.values())
+    stability = float(np.mean([_answer_stability(a) for a in answers]))
+    model_confidence = float(np.mean([_answer_effective_confidence(a) for a in answers]))
+    effective = float(np.clip(0.50 * model_confidence + 0.25 * stability + 0.25 * coherence, 0, 1))
+    return {
+        "coherence": coherence,
+        "order_stability": stability,
+        "model_confidence": model_confidence,
+        "effective_confidence": effective,
+    }
 
 
 def apply_decisions(
@@ -864,12 +997,10 @@ def apply_decisions(
     if calibration_file:
         requested = Path(str(calibration_file))
         if not requested.is_absolute():
-            candidates_for_path = [
-                config.source.parent / requested,
-                Path.cwd() / requested,
-            ]
+            candidates_for_path = [config.source.parent / requested, Path.cwd() / requested]
             resolved = next((p for p in candidates_for_path if p.exists()), requested)
             d["calibration_file"] = str(resolved)
+
     if not bool(d.get("enabled", True)) or out.empty:
         return out, {
             "enabled": False,
@@ -878,9 +1009,7 @@ def apply_decisions(
             "reason": "decision layer disabled",
         }
 
-    backend = str(
-        os.getenv("DECISION_BACKEND") or d.get("backend", "laya-multilingual")
-    ).lower()
+    backend = str(os.getenv("DECISION_BACKEND") or d.get("backend", "laya-multilingual")).lower()
     specs = resolve_model_specs(backend, d)
 
     min_prefilter = float(d.get("min_prefilter_score", 0.24))
@@ -889,15 +1018,14 @@ def apply_decisions(
         top_k, "prefilter_score"
     )
 
-    exploration_k = max(0, int(d.get("exploration_sample", 20)))
     remaining = out.drop(index=priority_candidates.index, errors="ignore")
-    if exploration_k > 0 and not remaining.empty:
-        exploration = remaining.sample(
-            n=min(exploration_k, len(remaining)),
-            random_state=int(config.get("project.random_seed", 42)),
-        )
-    else:
-        exploration = remaining.iloc[0:0]
+    exploration = _stratified_exploration(
+        remaining,
+        max(0, int(d.get("exploration_sample", 20))),
+        score_col="prefilter_score",
+        seed=int(config.get("project.random_seed", 42)),
+        bins=int(d.get("exploration_bins", 5)),
+    )
 
     candidates = pd.concat([priority_candidates, exploration], axis=0)
     candidates = candidates.loc[~candidates.index.duplicated(keep="first")]
@@ -911,14 +1039,11 @@ def apply_decisions(
         }
 
     out.loc[priority_candidates.index, "decision_sampling_reason"] = "priority"
-    out.loc[exploration.index, "decision_sampling_reason"] = "exploration"
+    out.loc[exploration.index, "decision_sampling_reason"] = "stratified_exploration"
 
-    engine, specs, effective_temperatures = create_decision_engine(
-        d,
-        backend_override=backend,
-    )
-
+    engine, specs, effective_temperatures = create_decision_engine(d, backend_override=backend)
     all_questions = listing_questions()
+
     requests: list[tuple[str, dict[str, dict[str, Any]]]] = []
     for _, row in candidates.iterrows():
         requests.extend(
@@ -933,13 +1058,21 @@ def apply_decisions(
                 (
                     build_listing_state(row, view="content"),
                     {
+                        "integrity_class": all_questions["integrity_class"],
                         "consistency": all_questions["consistency"],
                         "data_error_evidence": all_questions["data_error_evidence"],
                     },
                 ),
                 (
                     build_listing_state(row, view="bait"),
-                    {"bait_evidence": all_questions["bait_evidence"]},
+                    {
+                        "duplicate_pattern": all_questions["duplicate_pattern"],
+                        "bait_evidence": all_questions["bait_evidence"],
+                    },
+                ),
+                (
+                    build_listing_state(row, view="market"),
+                    {"market_status": all_questions["market_status"]},
                 ),
             ]
         )
@@ -947,10 +1080,11 @@ def apply_decisions(
     strict = bool(d.get("strict", True))
     try:
         flat_answers = engine.decide_many(requests)
-        answers = []
+        answers: list[dict[str, dict[str, Any]]] = []
+        pack_count = 4
         for i in range(len(candidates)):
             merged: dict[str, dict[str, Any]] = {}
-            for part in flat_answers[i * 3 : i * 3 + 3]:
+            for part in flat_answers[i * pack_count : i * pack_count + pack_count]:
                 merged.update(part)
             answers.append(merged)
     except Exception as exc:
@@ -964,29 +1098,63 @@ def apply_decisions(
             "error": f"{type(exc).__name__}: {exc}",
         }
 
+    min_conf = float(d.get("min_effective_confidence", 0.58))
+    min_coherence = float(d.get("min_coherence", 0.55))
+    min_stability = float(d.get("min_order_stability", 0.80))
+
     for (idx, _row), answer_map in zip(candidates.iterrows(), answers):
         disp = answer_map["disposition"]
+        integrity = answer_map["integrity_class"]
         consistency = answer_map["consistency"]
+        duplicate = answer_map["duplicate_pattern"]
         bait = answer_map["bait_evidence"]
         data_error = answer_map["data_error_evidence"]
+        market = answer_map["market_status"]
         review = answer_map["manual_review"]
+        quality = _decision_quality(answer_map)
+
+        abstain_reasons: list[str] = []
+        if quality["effective_confidence"] < min_conf:
+            abstain_reasons.append("low_effective_confidence")
+        if quality["coherence"] < min_coherence:
+            abstain_reasons.append("cross_question_incoherence")
+        if quality["order_stability"] < min_stability:
+            abstain_reasons.append("option_order_instability")
 
         out.at[idx, "decision_evaluated"] = True
         out.at[idx, "decision_backend"] = engine.backend_name
         out.at[idx, "decision_disposition"] = disp["choice"]
         out.at[idx, "decision_disposition_confidence"] = disp["confidence"]
         out.at[idx, "decision_answer_confidence"] = disp.get(
-            "answer_confidence",
-            max(disp["probabilities"].values()),
+            "answer_confidence", max(disp["probabilities"].values())
         )
         out.at[idx, "decision_disposition_probs_json"] = json.dumps(
             disp["probabilities"], ensure_ascii=False
         )
+
+        out.at[idx, "decision_integrity_class"] = integrity["choice"]
+        out.at[idx, "decision_integrity_probs_json"] = json.dumps(
+            integrity["probabilities"], ensure_ascii=False
+        )
+        out.at[idx, "decision_duplicate_pattern"] = duplicate["choice"]
+        out.at[idx, "decision_duplicate_pattern_probs_json"] = json.dumps(
+            duplicate["probabilities"], ensure_ascii=False
+        )
+        out.at[idx, "decision_market_status"] = market["choice"]
+        out.at[idx, "decision_market_status_probs_json"] = json.dumps(
+            market["probabilities"], ensure_ascii=False
+        )
+
         out.at[idx, "decision_bait_probability"] = bait["noul"]
         out.at[idx, "decision_data_error_probability"] = data_error["noul"]
         out.at[idx, "decision_manual_review_probability"] = review["noul"]
         out.at[idx, "decision_consistency_score"] = consistency["normalized_score"]
         out.at[idx, "decision_consistency_confidence"] = consistency["confidence"]
+        out.at[idx, "decision_order_stability"] = quality["order_stability"]
+        out.at[idx, "decision_coherence_score"] = quality["coherence"]
+        out.at[idx, "decision_effective_confidence"] = quality["effective_confidence"]
+        out.at[idx, "decision_abstain"] = bool(abstain_reasons)
+        out.at[idx, "decision_abstain_reasons"] = ",".join(abstain_reasons)
         out.at[idx, "decision_raw_json"] = json.dumps(answer_map, ensure_ascii=False)
 
     return out, {
@@ -1008,19 +1176,22 @@ def apply_decisions(
         "candidate_count": int(len(candidates)),
         "priority_candidate_count": int(len(priority_candidates)),
         "exploration_candidate_count": int(len(exploration)),
+        "sampling": "priority + stratified exploration across prefilter score",
+        "permutation_passes": int(d.get("permutation_passes", 2)) if backend == "laya-multilingual" else 1,
         "temperatures": effective_temperatures,
         "calibration_file": d.get("calibration_file"),
+        "abstention_thresholds": {
+            "effective_confidence": min_conf,
+            "coherence": min_coherence,
+            "order_stability": min_stability,
+        },
         "probability_note": (
-            (
-                "Laya returns native bounded System-1 probabilities from its RLCD-trained "
-                "decision head. This project can additionally apply target-domain "
-                "question-specific temperature scaling from labelled Tehran housing data."
-            )
+            "Laya is the native non-autoregressive System-One engine. All logical primitives "
+            "are transported through opaque bounded choices, pooled across deterministic option "
+            "permutations, then optionally target-domain temperature calibrated. Low confidence "
+            "or cross-question disagreement causes abstention/review, not a fraud assertion."
             if engine.backend_name == "laya-multilingual"
-            else (
-                "NLI-derived bounded probabilities are a research baseline, not TypeSafe "
-                "Jev's proprietary RLCD probabilities. Tune temperatures on labelled "
-                "Persian housing data before treating thresholds as calibrated."
-            )
+            else
+            "NLI backends are retained only as non-generative research baselines."
         ),
     }
