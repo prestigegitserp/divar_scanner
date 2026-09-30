@@ -16,8 +16,14 @@ def _patch_config(
     max_listings: int | None,
     no_decision: bool,
     decision_backend: str | None,
+    crawl_transport: str | None = None,
 ) -> str:
-    if max_listings is None and not no_decision and decision_backend is None:
+    if (
+        max_listings is None
+        and not no_decision
+        and decision_backend is None
+        and crawl_transport is None
+    ):
         return path
     import yaml
 
@@ -28,6 +34,8 @@ def _patch_config(
         cfg.setdefault("decision", {})["enabled"] = False
     if decision_backend:
         cfg.setdefault("decision", {})["backend"] = decision_backend
+    if crawl_transport:
+        cfg.setdefault("crawl", {})["transport"] = crawl_transport
     tmp = Path(".divar_scanner.runtime.yaml")
     tmp.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return str(tmp)
@@ -65,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="crawl Divar and run the full analysis pipeline")
     _add_common_args(run)
     run.add_argument("--max-listings", type=int, default=None)
+    run.add_argument(
+        "--crawl-transport",
+        choices=["kenar", "web", "api", "auto"],
+        default=None,
+        help="listing acquisition transport; kenar is recommended for Colab",
+    )
 
     analyze = sub.add_parser("analyze", help="analyze an existing normalized CSV/Parquet file")
     _add_common_args(analyze)
@@ -125,6 +139,7 @@ def main() -> None:
         getattr(args, "max_listings", None),
         args.no_decision,
         args.decision_backend,
+        getattr(args, "crawl_transport", None),
     )
     if args.command == "run":
         df, meta = run_pipeline(cfg, crawl=True)
