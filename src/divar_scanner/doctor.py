@@ -62,7 +62,8 @@ def collect() -> dict:
 def network_check(timeout: int = 12) -> dict:
     out = {}
     for name, url in {
-        "divar_districts": "https://api.divar.ir/v8/places/cities/1/districts",
+        "divar_web_fatemi": "https://divar.ir/s/tehran/rent-apartment/fatemi",
+        "divar_api_districts_optional": "https://api.divar.ir/v8/places/cities/1/districts",
         "decision_model_card": (
             "https://huggingface.co/"
             "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7/resolve/main/config.json"
@@ -72,7 +73,7 @@ def network_check(timeout: int = 12) -> dict:
             r = requests.get(
                 url,
                 timeout=timeout,
-                headers={"User-Agent": "divar-scanner-doctor/0.3"},
+                headers={"User-Agent": "divar-scanner-doctor/0.4.1"},
             )
             out[name] = {
                 "status": r.status_code,
@@ -80,6 +81,13 @@ def network_check(timeout: int = 12) -> dict:
             }
         except Exception as exc:
             out[name] = {"error": f"{type(exc).__name__}: {exc}"}
+    out["interpretation"] = {
+        "preferred_crawl_transport": "server-rendered web page",
+        "api_note": (
+            "api.divar.ir is optional for the default Fatemi Colab flow. "
+            "A timeout there does not imply that the public divar.ir search page is unavailable."
+        ),
+    }
     return out
 
 
