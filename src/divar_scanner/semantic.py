@@ -342,15 +342,25 @@ def _decide_jev(row: pd.Series, runtime: ProviderRuntime, timeout: int, retries:
     raise RuntimeError("Jev request failed")
 
 
+def _num(row: pd.Series, name: str) -> float:
+    try:
+        value = row.get(name, 0)
+        if value is None or pd.isna(value):
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
 def _heuristic(row: pd.Series) -> dict[str, Any]:
     conflict = max(
-        float(row.get("area_text_conflict", 0) or 0),
-        float(row.get("rooms_text_conflict", 0) or 0),
-        float(row.get("amenity_text_conflict", 0) or 0),
+        _num(row, "area_text_conflict"),
+        _num(row, "rooms_text_conflict"),
+        _num(row, "amenity_text_conflict"),
     )
-    bait = float(row.get("duplicate_bait_score", 0) or 0)
-    quality = float(row.get("data_quality_score", 0) or 0)
-    price = float(row.get("price_model_anomaly_score", 0) or 0)
+    bait = _num(row, "duplicate_bait_score")
+    quality = _num(row, "data_quality_score")
+    price = _num(row, "price_model_anomaly_score")
     suspicion = float(np.clip(0.46 * conflict + 0.30 * bait + 0.14 * quality + 0.10 * price, 0, 1))
     review = float(np.clip(max(suspicion, 0.55 * quality + 0.45 * price), 0, 1))
     if conflict >= 0.9:
