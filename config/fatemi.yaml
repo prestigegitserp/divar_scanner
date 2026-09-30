@@ -16,7 +16,7 @@ crawl:
   request_delay_seconds: 1.2
   jitter_seconds: 0.35
   timeout_seconds: 25
-  user_agent: "divar-scanner-research/0.1 (+public listing analysis)"
+  user_agent: "divar-scanner-research/0.2 (+public listing analysis)"
   redact_phone_numbers: true
   cache_dir: "data/cache"
   raw_dir: "data/raw"
@@ -35,24 +35,40 @@ anomaly:
   peer_min_count: 8
   isolation_contamination: "auto"
   duplicate_similarity_threshold: 0.88
-  duplicate_max_features: 10000
+  duplicate_max_features: 12000
 
 semantic:
   enabled: true
   provider: "auto"
-  model: "jev-latest"
+  provider_priority:
+    - "jev"
+    - "jev-official"
+    - "groq"
+    - "cerebras"
+    - "gemini"
+    - "openrouter"
+    - "huggingface"
+    - "custom-openai-compatible"
+  ensemble_max_providers: 1
+  models:
+    jev: "jev-1.13.0"
+    groq: "openai/gpt-oss-20b"
+    cerebras: "gpt-oss-120b"
+    gemini: "gemini-3.8-flash"
+    openrouter: "openrouter/free"
+    huggingface: "openai/gpt-oss-120b:fastest"
   top_k: 80
-  min_prefilter_score: 0.35
+  min_prefilter_score: 0.28
   timeout_seconds: 30
-  retries: 3
+  retries: 2
 
 scoring:
-  data_quality_weight: 0.24
-  market_anomaly_weight: 0.36
-  duplicate_weight: 0.12
-  semantic_weight: 0.28
-  review_threshold: 0.62
-  high_risk_threshold: 0.80
+  data_quality_weight: 0.22
+  market_anomaly_weight: 0.38
+  duplicate_weight: 0.16
+  semantic_weight: 0.24
+  review_threshold: 0.58
+  high_risk_threshold: 0.78
 
 output:
   directory: "outputs/fatemi"
