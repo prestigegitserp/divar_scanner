@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .decision import build_listing_state, listing_questions
+from .laya_backend import adapt_questions_for_laya
 
 
 def _missing(value: Any) -> bool:
@@ -87,6 +88,32 @@ def _score_gold(question: dict[str, Any], label: Any, confidence: float) -> dict
     }
 
 
+def _adapt_gold_for_laya(
+    gold: dict[str, dict[str, Any]],
+    metadata: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for qid, g in gold.items():
+        meta = metadata[qid]
+        qtype = meta["type"]
+        if qtype == "choice":
+            forward = meta["forward"]
+            label = str(g["label"])
+            probs = {
+                forward[str(k)]: float(v)
+                for k, v in g["probabilities"].items()
+            }
+            out[qid] = {
+                **g,
+                "label": forward[label],
+                "probabilities": probs,
+            }
+        else:
+            # score keys are already "0".."K-1"; noul gold already uses false/true.
+            out[qid] = g
+    return out
+
+
 def _case(
     *,
     case_id: str,
@@ -97,14 +124,18 @@ def _case(
 ) -> dict[str, Any] | None:
     if not gold:
         return None
+
+    laya_questions, metadata = adapt_questions_for_laya(questions)
+    laya_gold = _adapt_gold_for_laya(gold, metadata)
+
     # This mirrors the public Laya typed-decisions dataset schema: each field is
     # JSON-serialized and the official preprocessor calls json.loads on it.
     return {
         "case_id": case_id,
         "split_hint": split_hint,
         "state": json.dumps(state, ensure_ascii=False),
-        "questions": json.dumps(questions, ensure_ascii=False),
-        "gold": json.dumps(gold, ensure_ascii=False),
+        "questions": json.dumps(laya_questions, ensure_ascii=False),
+        "gold": json.dumps(laya_gold, ensure_ascii=False),
     }
 
 
