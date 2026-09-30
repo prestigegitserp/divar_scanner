@@ -18,6 +18,8 @@ from .crawler import (
     _token_from_url,
 )
 
+_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
 _BLOCK_HINTS = (
     "captcha",
     "کپچا",
@@ -52,6 +54,24 @@ def _line_with(text: str, needles: tuple[str, ...]) -> str:
     return ""
 
 
+def _area_hint(text: str) -> int | None:
+    s = str(text or "").translate(_DIGITS)
+    m = re.search(r"(?<!\d)(\d{2,4})\s*(?:متر|متری)", s)
+    return int(m.group(1)) if m else None
+
+
+def _rooms_hint(text: str) -> int | None:
+    s = str(text or "").translate(_DIGITS)
+    m = re.search(r"(?<!\d)(\d{1,2})\s*(?:خواب|اتاق)", s)
+    if m:
+        return int(m.group(1))
+    words = {"بدون اتاق": 0, "یک خواب": 1, "دو خواب": 2, "سه خواب": 3, "چهار خواب": 4}
+    for phrase, value in words.items():
+        if phrase in s:
+            return value
+    return None
+
+
 def normalize_dom_cards(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize visible Divar listing anchors collected by the browser."""
     out: list[dict[str, Any]] = []
@@ -73,6 +93,8 @@ def normalize_dom_cards(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "url": url,
                 "title": title,
                 "description_hint": text,
+                "area_hint": _area_hint(title + "\n" + text),
+                "rooms_hint": _rooms_hint(title + "\n" + text),
                 "deposit_text": _line_with(text, ("ودیعه", "رهن")),
                 "rent_text": _line_with(text, ("اجاره",)),
                 "bottom_text": text,
@@ -188,6 +210,7 @@ class BrowserDivarCrawler:
             self._assert_not_blocked(status, body)
 
             for card in normalize_dom_cards(self._collect_dom_rows(page)):
+                card["district"] = str(self.config.get("crawl.district_query", "فاطمی"))
                 cards[card["token"]] = card
                 if len(cards) >= self.max_listings:
                     return list(cards.values())[: self.max_listings]
