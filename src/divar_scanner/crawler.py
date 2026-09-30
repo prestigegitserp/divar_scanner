@@ -662,8 +662,10 @@ class DivarCrawler:
         return rows, meta
 
     def crawl(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if self.transport not in {"snapshot", "kenar", "web", "api", "auto"}:
-            raise ValueError("crawl.transport must be one of: snapshot, kenar, web, api, auto")
+        if self.transport not in {"snapshot", "browser", "kenar", "web", "api", "auto"}:
+            raise ValueError(
+                "crawl.transport must be one of: snapshot, browser, kenar, web, api, auto"
+            )
 
         if self.transport == "snapshot":
             raise DivarTransportError(
@@ -671,6 +673,9 @@ class DivarCrawler:
                 "Use run_pipeline(..., crawl=False, input_path='saved_page.html') "
                 "or upload HTML/JSONL/CSV/Parquet/ZIP in the Colab snapshot mode."
             )
+        if self.transport == "browser":
+            from .browser_crawler import BrowserDivarCrawler
+            return BrowserDivarCrawler(self.config).crawl()
         if self.transport == "kenar":
             return self._crawl_kenar()
         if self.transport == "web":
@@ -680,11 +685,15 @@ class DivarCrawler:
 
         errors: list[str] = []
 
-        if os.getenv("KENAR_API_KEY"):
-            try:
-                return self._crawl_kenar()
-            except (requests.RequestException, ValueError, RuntimeError) as exc:
-                errors.append(f"kenar:{type(exc).__name__}:{exc}")
+        # In auto mode, prefer a real browser when Playwright is installed. This keeps
+        # acquisition aligned with the public website and avoids private API coupling.
+        try:
+            from .browser_crawler import BrowserDivarCrawler
+            return BrowserDivarCrawler(self.config).crawl()
+        except (ImportError, RuntimeError, ValueError, DivarBlockedError) as exc:
+            errors.append(f"browser:{type(exc).__name__}:{exc}")
+            if isinstance(exc, DivarBlockedError):
+                raise
 
         try:
             return self._crawl_web()
@@ -704,8 +713,8 @@ class DivarCrawler:
                 "was attempted. Errors: "
                 + " | ".join(errors)
                 + " Direct Divar access appears unavailable from this runtime. "
-                "Use Divar's official Kenar/Open Platform with KENAR_API_KEY + SEARCH_POST, "
-                "or acquire a snapshot in a network that can reach Divar and analyze it in Colab."
+                "Run the browser transport on a machine/network that can open Divar, "
+                "then analyze the generated raw JSONL in Colab."
             ) from exc
 
 
