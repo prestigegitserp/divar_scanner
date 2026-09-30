@@ -807,6 +807,7 @@ def listing_questions() -> dict[str, dict[str, Any]]:
 def _empty_decision_columns(out: pd.DataFrame) -> pd.DataFrame:
     out = out.copy()
     out["decision_evaluated"] = False
+    out["decision_sampling_reason"] = ""
     out["decision_backend"] = ""
     out["decision_disposition"] = ""
     out["decision_disposition_confidence"] = np.nan
@@ -841,17 +842,33 @@ def apply_decisions(
 
     min_prefilter = float(d.get("min_prefilter_score", 0.24))
     top_k = min(int(d.get("top_k", 60)), len(out))
-    candidates = out[out["prefilter_score"] >= min_prefilter].nlargest(
+    priority_candidates = out[out["prefilter_score"] >= min_prefilter].nlargest(
         top_k, "prefilter_score"
     )
+
+    exploration_k = max(0, int(d.get("exploration_sample", 20)))
+    remaining = out.drop(index=priority_candidates.index, errors="ignore")
+    if exploration_k > 0 and not remaining.empty:
+        exploration = remaining.sample(
+            n=min(exploration_k, len(remaining)),
+            random_state=int(config.get("project.random_seed", 42)),
+        )
+    else:
+        exploration = remaining.iloc[0:0]
+
+    candidates = pd.concat([priority_candidates, exploration], axis=0)
+    candidates = candidates.loc[~candidates.index.duplicated(keep="first")]
     if candidates.empty:
         return out, {
             "enabled": True,
             "backend": backend,
             "model": " + ".join(spec.model_name for spec in specs),
             "evaluated": 0,
-            "reason": "no rows passed decision prefilter",
+            "reason": "no rows selected for bounded decisions",
         }
+
+    out.loc[priority_candidates.index, "decision_sampling_reason"] = "priority"
+    out.loc[exploration.index, "decision_sampling_reason"] = "exploration"
 
     engine, specs, effective_temperatures = create_decision_engine(
         d,
@@ -940,6 +957,8 @@ def apply_decisions(
         ],
         "evaluated": int(out["decision_evaluated"].sum()),
         "candidate_count": int(len(candidates)),
+        "priority_candidate_count": int(len(priority_candidates)),
+        "exploration_candidate_count": int(len(exploration)),
         "temperatures": effective_temperatures,
         "calibration_file": d.get("calibration_file"),
         "probability_note": (
