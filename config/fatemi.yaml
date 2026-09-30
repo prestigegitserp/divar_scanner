@@ -3,9 +3,9 @@ project:
   random_seed: 42
 
 crawl:
-  # Colab/cloud IPs can time out on api.divar.ir. Default to Divar's public
-  # server-rendered search page; API mode remains available explicitly.
-  transport: "web"  # web | api | auto
+  # Colab/cloud IPs can time out on both divar.ir and api.divar.ir.
+  # Default to Divar's official Kenar/Open Platform Finder API.
+  transport: "kenar"  # kenar | web | api | auto
   city_id: "1"
   city_slug: "tehran"
   category: "apartment-rent"
@@ -24,6 +24,10 @@ crawl:
   jitter_seconds: 0.35
   timeout_seconds: 25
   web_timeout_seconds: 15
+  kenar_timeout_seconds: 20
+  # SEARCH_POST alone is sufficient for numeric anomaly analysis.
+  # Enable only when your key also has GET_POST and you need richer text.
+  kenar_enrich_details: false
   user_agent: "divar-scanner-research/0.4 (+public listing analysis)"
   redact_phone_numbers: true
   cache_dir: "data/cache"
