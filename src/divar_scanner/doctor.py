@@ -59,28 +59,41 @@ def collect() -> dict:
     }
 
 
-def network_check(timeout: int = 12) -> dict:
+def network_check(timeout: int = 10) -> dict:
     out = {}
-    for name, url in {
-        "divar_web_fatemi": "https://divar.ir/s/tehran/rent-apartment/fatemi",
-        "divar_api_districts_optional": "https://api.divar.ir/v8/places/cities/1/districts",
-        "decision_model_card": (
-            "https://huggingface.co/"
-            "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7/resolve/main/config.json"
+    checks = {
+        "divar_web_fatemi": (
+            "https://divar.ir/s/tehran/rent-apartment/fatemi",
+            min(timeout, 10),
         ),
-    }.items():
+        # Optional legacy transport. Keep this probe short: cloud/Colab IPs may
+        # simply be unable to connect to api.divar.ir.
+        "divar_api_districts_optional": (
+            "https://api.divar.ir/v8/places/cities/1/districts",
+            min(timeout, 4),
+        ),
+        "laya_model_card": (
+            "https://huggingface.co/convaiinnovations/laya/resolve/main/multilingual/config.json",
+            min(timeout, 10),
+        ),
+    }
+    for name, (url, check_timeout) in checks.items():
         try:
             r = requests.get(
                 url,
-                timeout=timeout,
+                timeout=check_timeout,
                 headers={"User-Agent": "divar-scanner-doctor/0.4.1"},
             )
             out[name] = {
                 "status": r.status_code,
                 "content_type": r.headers.get("content-type", ""),
+                "timeout_seconds": check_timeout,
             }
         except Exception as exc:
-            out[name] = {"error": f"{type(exc).__name__}: {exc}"}
+            out[name] = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "timeout_seconds": check_timeout,
+            }
     out["interpretation"] = {
         "preferred_crawl_transport": "server-rendered web page",
         "api_note": (
