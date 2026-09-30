@@ -118,15 +118,18 @@ def add_density_anomaly(df: pd.DataFrame, config: Config) -> pd.DataFrame:
         return out
 
     cols = [
-        "area_m2", "rooms", "year_built_shamsi",
-        "deposit_per_m2", "rent_per_m2", "equivalent_deposit_per_m2",
+        "area_m2",
+        "rooms",
+        "year_built_shamsi",
+        "equivalent_deposit_per_m2",
+        "contract_rent_share",
     ]
     X = pd.DataFrame(index=out.index)
     for col in cols:
         if col not in out:
             continue
         s = pd.to_numeric(out[col], errors="coerce")
-        if "deposit" in col or "rent" in col:
+        if col == "equivalent_deposit_per_m2":
             s = np.log1p(s.clip(lower=0))
         med = s.median()
         X[col] = s.fillna(0 if pd.isna(med) else med)
