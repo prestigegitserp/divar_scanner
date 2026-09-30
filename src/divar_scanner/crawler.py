@@ -662,9 +662,15 @@ class DivarCrawler:
         return rows, meta
 
     def crawl(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if self.transport not in {"kenar", "web", "api", "auto"}:
-            raise ValueError("crawl.transport must be one of: kenar, web, api, auto")
+        if self.transport not in {"snapshot", "kenar", "web", "api", "auto"}:
+            raise ValueError("crawl.transport must be one of: snapshot, kenar, web, api, auto")
 
+        if self.transport == "snapshot":
+            raise DivarTransportError(
+                "crawl.transport='snapshot' performs no network acquisition. "
+                "Use run_pipeline(..., crawl=False, input_path='saved_page.html') "
+                "or upload HTML/JSONL/CSV/Parquet/ZIP in the Colab snapshot mode."
+            )
         if self.transport == "kenar":
             return self._crawl_kenar()
         if self.transport == "web":
