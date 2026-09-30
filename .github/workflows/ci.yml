@@ -6,12 +6,50 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev]'
+      - name: Packaging/import smoke test
+        run: |
+          python - <<'PY'
+          import pathlib
+          import divar_scanner
+          import divar_scanner.pipeline
+          import pandas, numpy, sklearn, pyarrow
+          p = pathlib.Path(divar_scanner.__file__).resolve().as_posix()
+          print("package:", p)
+          print("pandas:", pandas.__version__)
+          print("numpy:", numpy.__version__)
+          assert "/src/divar_scanner/" in p
+          PY
+      - run: pytest
+      - run: python -m compileall -q src
+
+  colab-smoke:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
-      - run: pip install -e '.[dev]'
-      - run: pytest
-      - run: python -m compileall -q src
+      - name: Simulate safe Colab clone directory
+        run: |
+          mkdir -p /tmp/content
+          cp -R "$GITHUB_WORKSPACE" /tmp/content/divar_scanner_repo
+          cd /tmp/content/divar_scanner_repo
+          python -m pip install -e .
+          cd /tmp/content
+          PYTHONPATH=/tmp/content/divar_scanner_repo/src python -m divar_scanner.doctor
+          PYTHONPATH=/tmp/content/divar_scanner_repo/src python - <<'PY'
+          from divar_scanner.pipeline import run_pipeline
+          print("Colab-style import OK:", run_pipeline.__name__)
+          PY
