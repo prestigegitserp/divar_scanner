@@ -343,6 +343,9 @@ def run_pipeline(
         annotation_df = df[df["decision_evaluated"] == True].copy()  # noqa: E712
         for label_col in (
             "human_disposition",
+            "human_integrity_class",
+            "human_duplicate_pattern",
+            "human_market_status",
             "human_bait",
             "human_data_error",
             "human_manual_review",
