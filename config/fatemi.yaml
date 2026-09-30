@@ -3,9 +3,14 @@ project:
   random_seed: 42
 
 crawl:
+  # Colab/cloud IPs can time out on api.divar.ir. Default to Divar's public
+  # server-rendered search page; API mode remains available explicitly.
+  transport: "web"  # web | api | auto
   city_id: "1"
   city_slug: "tehran"
   category: "apartment-rent"
+  web_category_slug: "rent-apartment"
+  district_slug: "fatemi"
   district_query: "فاطمی"
   district_aliases:
     - "فاطمی"
@@ -13,9 +18,11 @@ crawl:
     - "دکتر فاطمی"
   max_listings: 500
   max_pages: 50
+  max_web_pages: 4
   request_delay_seconds: 1.2
   jitter_seconds: 0.35
   timeout_seconds: 25
+  web_timeout_seconds: 15
   user_agent: "divar-scanner-research/0.4 (+public listing analysis)"
   redact_phone_numbers: true
   cache_dir: "data/cache"
