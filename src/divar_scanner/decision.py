@@ -250,7 +250,7 @@ def _candidate_hypothesis(instructions: str, key: str, description: str, qtype: 
     description = description.strip()
     if qtype == "choice":
         return (
-            f"برای پرسش «{instructions}»، گزینهٔ «{key}» درست است: {description}"
+            f"برای پرسش «{instructions}»، این توصیف پاسخ درست است: {description}"
         )
     if qtype == "score":
         return (
@@ -671,42 +671,69 @@ def _fmt_num(value: float | None, digits: int = 3) -> str:
     return f"{value:.{digits}f}"
 
 
-def build_listing_state(row: pd.Series) -> str:
+def build_listing_state(row: pd.Series, *, view: str = "full") -> str:
     description = str(row.get("description", "") or "").strip()
     if len(description) > 1800:
         description = description[:1800] + "…"
 
     title = str(row.get("title", "") or "").strip()
     neighborhood = str(row.get("neighborhood", "") or "").strip()
-    fields = [
+
+    identity = [
         f"عنوان آگهی: {title}",
         f"توضیحات آگهی: {description}",
         f"محله: {neighborhood or 'نامشخص'}",
         f"متراژ ساختاریافته: {_fmt_num(_num(row, 'area_m2'), 0)} متر",
         f"اتاق ساختاریافته: {_fmt_num(_num(row, 'rooms'), 0)}",
         f"سال ساخت: {_fmt_num(_num(row, 'year_built_shamsi'), 0)}",
-        f"ودیعه: {_fmt_num(_num(row, 'deposit_toman'), 0)} تومان",
-        f"اجاره ماهانه: {_fmt_num(_num(row, 'rent_monthly_toman'), 0)} تومان",
-        "",
-        "شواهد محاسباتی مستقل (اینها حکم نهایی نیستند):",
+        f"پارکینگ ساختاریافته: {row.get('parking', 'ناموجود')}",
+        f"آسانسور ساختاریافته: {row.get('elevator', 'ناموجود')}",
+        f"انباری ساختاریافته: {row.get('storage', 'ناموجود')}",
+    ]
+    consistency = [
+        "شواهد سازگاری/کیفیت داده:",
         f"- data_quality_score: {_fmt_num(_num(row, 'data_quality_score'))}",
         f"- area_text_conflict: {_fmt_num(_num(row, 'area_text_conflict'))}",
         f"- rooms_text_conflict: {_fmt_num(_num(row, 'rooms_text_conflict'))}",
         f"- amenity_text_conflict: {_fmt_num(_num(row, 'amenity_text_conflict'))}",
-        f"- market_anomaly_score: {_fmt_num(_num(row, 'market_anomaly_score'))}",
-        f"- OOF price actual/expected ratio: {_fmt_num(_num(row, 'price_model_ratio'))}",
-        f"- OOF price anomaly: {_fmt_num(_num(row, 'price_model_anomaly_score'))}",
-        f"- LOF anomaly: {_fmt_num(_num(row, 'lof_anomaly_score'))}",
+    ]
+    duplicate = [
+        "شواهد تکرار و بازنمایی:",
         f"- nearest duplicate similarity: {_fmt_num(_num(row, 'duplicate_similarity'))}",
         f"- duplicate cluster size: {_fmt_num(_num(row, 'duplicate_cluster_size'), 0)}",
         f"- duplicate cluster neighborhood count: {_fmt_num(_num(row, 'duplicate_cluster_neighborhoods'), 0)}",
         f"- duplicate cluster price inconsistency: {_fmt_num(_num(row, 'duplicate_cluster_price_span'))}",
         f"- duplicate bait score: {_fmt_num(_num(row, 'duplicate_bait_score'))}",
+    ]
+    market = [
+        "شواهد بازار (برای تشخیص outlier، نه اثبات فریب):",
+        f"- سبک قرارداد: {row.get('contract_style', 'unknown')}",
+        f"- ودیعه: {_fmt_num(_num(row, 'deposit_toman'), 0)} تومان",
+        f"- اجاره ماهانه: {_fmt_num(_num(row, 'rent_monthly_toman'), 0)} تومان",
+        f"- market_anomaly_score: {_fmt_num(_num(row, 'market_anomaly_score'))}",
+        f"- OOF price actual/expected ratio: {_fmt_num(_num(row, 'price_model_ratio'))}",
+        f"- OOF price anomaly: {_fmt_num(_num(row, 'price_model_anomaly_score'))}",
+        f"- LOF anomaly: {_fmt_num(_num(row, 'lof_anomaly_score'))}",
+        f"- conversion sensitivity: {_fmt_num(_num(row, 'equivalence_sensitivity'))}",
+    ]
+
+    if view == "content":
+        sections = identity + [""] + consistency
+    elif view == "bait":
+        # Deliberately hide single-listing market anomaly/price-model evidence from the
+        # misleading/bait judgment. This prevents "cheap => fraud" shortcut learning.
+        sections = identity + [""] + consistency + [""] + duplicate
+    elif view == "full":
+        sections = identity + [""] + consistency + [""] + duplicate + [""] + market
+    else:
+        raise ValueError(f"Unknown listing-state view: {view!r}")
+
+    sections += [
         "",
         "قاعدهٔ تصمیم: قیمت غیرعادی به‌تنهایی نشانهٔ فریب نیست. "
         "خطای داده/پارسینگ را از آگهی واقعاً نامعمول و از شواهد گمراه‌کنندگی جدا کن.",
     ]
-    return "\n".join(fields)
+    return "\n".join(str(x) for x in sections)
 
 
 def listing_questions() -> dict[str, dict[str, Any]]:
@@ -729,8 +756,8 @@ def listing_questions() -> dict[str, dict[str, Any]]:
                     "فراتر از صرفاً قیمت پرت، تناقض یا الگوی تکراری معناداری وجود دارد که با "
                     "آگهی گمراه‌کننده/طعمه‌ای سازگار است."
                 ),
-                "needs_review": (
-                    "شواهد چندپهلو یا متعارض است و برای نتیجهٔ قابل اتکا بازبینی انسانی لازم است."
+                "ambiguous_mixed": (
+                    "چند نوع شواهد با هم رقابت می‌کنند و هیچ‌کدام به‌عنوان وضعیت اصلی غالب نیست."
                 ),
             },
         },
@@ -831,14 +858,41 @@ def apply_decisions(
         backend_override=backend,
     )
 
-    requests = [
-        (build_listing_state(row), listing_questions())
-        for _, row in candidates.iterrows()
-    ]
+    all_questions = listing_questions()
+    requests: list[tuple[str, dict[str, dict[str, Any]]]] = []
+    for _, row in candidates.iterrows():
+        requests.extend(
+            [
+                (
+                    build_listing_state(row, view="full"),
+                    {
+                        "disposition": all_questions["disposition"],
+                        "manual_review": all_questions["manual_review"],
+                    },
+                ),
+                (
+                    build_listing_state(row, view="content"),
+                    {
+                        "consistency": all_questions["consistency"],
+                        "data_error_evidence": all_questions["data_error_evidence"],
+                    },
+                ),
+                (
+                    build_listing_state(row, view="bait"),
+                    {"bait_evidence": all_questions["bait_evidence"]},
+                ),
+            ]
+        )
 
     strict = bool(d.get("strict", True))
     try:
-        answers = engine.decide_many(requests)
+        flat_answers = engine.decide_many(requests)
+        answers = []
+        for i in range(len(candidates)):
+            merged: dict[str, dict[str, Any]] = {}
+            for part in flat_answers[i * 3 : i * 3 + 3]:
+                merged.update(part)
+            answers.append(merged)
     except Exception as exc:
         if strict:
             raise
