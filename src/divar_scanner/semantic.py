@@ -20,10 +20,14 @@ CLASSES = ["plausible", "data_error", "market_outlier", "misleading_or_bait", "n
 @dataclass(frozen=True)
 class ProviderRuntime:
     name: str
-    endpoint: str
-    api_key: str
-    model: str
+    endpoint: str = ""
+    api_key: str = ""
+    model: str = ""
     native_jev: bool = False
+    local: bool = False
+
+
+_LOCAL_MODEL_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
 def _env(name: str) -> str | None:
@@ -98,10 +102,27 @@ def resolve_providers(config: Config) -> list[ProviderRuntime]:
     if not bool(s.get("enabled", True)):
         return []
     requested = str(os.getenv("SEMANTIC_PROVIDER") or s.get("provider", "auto")).strip().lower()
+    aliases = {
+        "hf": "huggingface",
+        "typesafe": "jev-official",
+        "local": "local-qwen",
+        "qwen-local": "local-qwen",
+        "aya-local": "local-aya",
+    }
+    requested = aliases.get(requested, requested)
+
+    models = s.get("models", {}) if isinstance(s.get("models"), dict) else {}
+    local_models = {
+        "local-qwen-small": str(models.get("local_qwen_small", "Qwen/Qwen3-1.7B")),
+        "local-qwen": str(models.get("local_qwen", "Qwen/Qwen3-4B")),
+        "local-aya": str(models.get("local_aya", "CohereLabs/aya-expanse-8b")),
+    }
+    if requested in local_models:
+        model_id = os.getenv("LOCAL_MODEL_ID") or local_models[requested]
+        return [ProviderRuntime(name=requested, model=model_id, local=True)]
+
     all_candidates = _provider_candidates(config)
     if requested != "auto":
-        aliases = {"hf": "huggingface", "typesafe": "jev-official"}
-        requested = aliases.get(requested, requested)
         return [p for p in all_candidates if p.name == requested][:1]
 
     preferred = s.get(
@@ -347,6 +368,115 @@ def _decide_jev(row: pd.Series, runtime: ProviderRuntime, timeout: int, retries:
     raise RuntimeError("Jev request failed")
 
 
+
+def _load_local_model(runtime: ProviderRuntime) -> tuple[Any, Any]:
+    cached = _LOCAL_MODEL_CACHE.get(runtime.model)
+    if cached is not None:
+        return cached
+
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    except ImportError as exc:
+        raise RuntimeError(
+            "Local semantic inference needs the optional dependencies. "
+            "Install with: python -m pip install -e '.[local]'"
+        ) from exc
+
+    if torch.cuda.is_available():
+        quant = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            runtime.model,
+            device_map="auto",
+            quantization_config=quant,
+            torch_dtype="auto",
+            low_cpu_mem_usage=True,
+        )
+    else:
+        if runtime.name != "local-qwen-small":
+            raise RuntimeError(
+                "This local model is intended for a GPU runtime. In Colab choose "
+                "Runtime > Change runtime type > GPU, or select local-qwen-small for a slow CPU fallback."
+            )
+        model = AutoModelForCausalLM.from_pretrained(
+            runtime.model,
+            device_map={"": "cpu"},
+            torch_dtype=torch.float32,
+            low_cpu_mem_usage=True,
+        )
+
+    tokenizer = AutoTokenizer.from_pretrained(runtime.model, use_fast=True)
+    model.eval()
+    _LOCAL_MODEL_CACHE[runtime.model] = (tokenizer, model)
+    return tokenizer, model
+
+
+def _decide_local(row: pd.Series, runtime: ProviderRuntime) -> dict[str, Any]:
+    import torch
+
+    tokenizer, model = _load_local_model(runtime)
+    messages = [
+        {"role": "system", "content": _system_prompt()},
+        {
+            "role": "user",
+            "content": _user_prompt(row)
+            + "\nReturn one compact JSON object only. No markdown, no analysis, no code fence.",
+        },
+    ]
+    try:
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except (TypeError, ValueError):
+        try:
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except (TypeError, ValueError):
+            prompt = (
+                "SYSTEM:\n"
+                + _system_prompt()
+                + "\nUSER:\n"
+                + _user_prompt(row)
+                + "\nASSISTANT JSON:\n"
+            )
+
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=3072,
+    )
+    target_device = next(model.parameters()).device
+    inputs = {k: v.to(target_device) for k, v in inputs.items()}
+    input_len = int(inputs["input_ids"].shape[-1])
+
+    with torch.inference_mode():
+        output = model.generate(
+            **inputs,
+            max_new_tokens=320,
+            do_sample=False,
+            use_cache=True,
+            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+    generated = output[0][input_len:]
+    text = tokenizer.decode(generated, skip_special_tokens=True)
+    parsed = _extract_json_text(text)
+    if not parsed:
+        raise ValueError(f"Local model returned no parseable JSON: {text[:300]!r}")
+    return _validate_result(parsed)
+
 def _num(row: pd.Series, name: str) -> float:
     try:
         value = row.get(name, 0)
@@ -414,10 +544,12 @@ def apply_semantic(df: pd.DataFrame, config: Config) -> tuple[pd.DataFrame, dict
             "providers_available": [p.name for p in providers],
             "providers_used": [],
             "evaluated": 0,
-            "reason": "no configured API key; deterministic semantic fallback used",
+            "reason": "no semantic provider configured; deterministic fallback used",
         }
 
     top_k = min(int(s.get("top_k", 80)), len(out))
+    if any(p.local for p in providers):
+        top_k = min(top_k, int(s.get("local_top_k", 24)))
     min_prefilter = float(s.get("min_prefilter_score", 0.28))
     candidates = out[out["prefilter_score"] >= min_prefilter].nlargest(top_k, "prefilter_score")
     timeout = int(s.get("timeout_seconds", 30))
@@ -429,11 +561,12 @@ def apply_semantic(df: pd.DataFrame, config: Config) -> tuple[pd.DataFrame, dict
         results: list[tuple[ProviderRuntime, dict[str, Any]]] = []
         for provider in providers:
             try:
-                result = (
-                    _decide_jev(row, provider, timeout, retries)
-                    if provider.native_jev
-                    else _decide_openai_compatible(row, provider, timeout, retries)
-                )
+                if provider.local:
+                    result = _decide_local(row, provider)
+                elif provider.native_jev:
+                    result = _decide_jev(row, provider, timeout, retries)
+                else:
+                    result = _decide_openai_compatible(row, provider, timeout, retries)
                 results.append((provider, result))
             except Exception as exc:
                 errors.append(f"{provider.name}:{row.get('token', idx)}:{type(exc).__name__}:{exc}")
