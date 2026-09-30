@@ -20,6 +20,19 @@ crawl:
   max_listings: 500
   max_pages: 50
   max_web_pages: 4
+
+  # Automatic real-browser crawler (recommended outside Colab).
+  browser_headless: true
+  browser_enrich_details: true
+  browser_max_scrolls: 80
+  browser_stall_rounds: 5
+  browser_scroll_delay_seconds: 1.0
+  browser_detail_delay_seconds: 1.4
+  browser_detail_jitter_seconds: 0.35
+  browser_navigation_timeout_ms: 35000
+  browser_max_detail_pages: 200
+  browser_channel: null
+
   request_delay_seconds: 1.2
   jitter_seconds: 0.35
   timeout_seconds: 25
