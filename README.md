@@ -111,6 +111,18 @@ Sees structured property facts and market statistics, not persuasive ad copy.
 
 Sees all evidence and is used only for final disposition and whether a human should review the row.
 
+## Trust stages
+
+Laya Multilingual is intentionally not given full influence zero-shot. The default config is:
+
+    decision:
+      trust_stage: bootstrap
+    scoring:
+      bootstrap_decision_multiplier: 0.25
+      calibrated_decision_multiplier: 0.45
+      adapted_decision_multiplier: 1.0
+
+`bootstrap` is for collecting/triaging labels with the base multilingual checkpoint. `calibrated` is for a checkpoint whose probabilities were fitted on held-out Fatemi labels. `adapted` should only be used after domain fine-tuning plus held-out evaluation. Model confidence cannot bypass this cap.
 ## Selective prediction
 
 Laya is allowed to abstain. v0.4 computes:
