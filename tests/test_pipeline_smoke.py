@@ -80,12 +80,12 @@ def test_end_to_end_analysis_pipeline(tmp_path: Path):
             "duplicate_similarity_threshold": 0.88,
             "duplicate_max_features": 4000,
         },
-        "semantic": {"enabled": False, "top_k": 10, "min_prefilter_score": 0.2},
+        "decision": {"enabled": False, "top_k": 10, "min_prefilter_score": 0.2},
         "scoring": {
             "data_quality_weight": 0.22,
             "market_anomaly_weight": 0.38,
             "duplicate_weight": 0.16,
-            "semantic_weight": 0.24,
+            "decision_weight": 0.24,
             "review_threshold": 0.58,
             "high_risk_threshold": 0.78,
         },
@@ -106,8 +106,9 @@ def test_end_to_end_analysis_pipeline(tmp_path: Path):
         "lof_anomaly_score",
         "duplicate_cluster_size",
         "duplicate_bait_score",
-        "semantic_score",
-        "semantic_provider",
+        "decision_evaluated",
+        "decision_bait_probability",
+        "decision_disposition",
         "uncertainty_score",
         "suspicion_score",
         "review_priority_score",
@@ -118,7 +119,7 @@ def test_end_to_end_analysis_pipeline(tmp_path: Path):
     assert len(scored) == len(df)
     assert scored["review_priority_score"].between(0, 1).all()
     assert scored["suspicion_score"].between(0, 1).all()
-    assert meta["pipeline_version"] == "0.2.0"
+    assert meta["pipeline_version"] == "0.3.0"
     assert meta["counts"]["total"] == len(df)
 
     candidate = scored.loc[scored["token"] == f"tok{len(df)-1}"].iloc[0]
