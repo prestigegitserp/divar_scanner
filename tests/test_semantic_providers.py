@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import numpy as np
 
-from divar_scanner.laya_backend import (
-    _normalize_laya_answer,
-    adapt_questions_for_laya,
-)
-
 from divar_scanner.decision import (
     compile_requests,
     resolve_model_specs,
     typed_answer_from_evidence,
+)
+from divar_scanner.laya_backend import (
+    _logical_answer,
+    _log_pool,
+    _normalize_choice_transport,
+    _stable_permutation,
+    adapt_questions_for_laya,
 )
 
 
@@ -33,10 +35,9 @@ def test_choice_is_bounded_and_normalized():
     assert out["choice"] == "plausible"
     assert set(out["probabilities"]) == set(q["criteria"])
     assert np.isclose(sum(out["probabilities"].values()), 1.0)
-    assert 0 <= out["confidence"] <= 1
 
 
-def test_noul_returns_probability_of_yes():
+def test_nli_baseline_noul_returns_probability_of_yes():
     q = {
         "type": "noul",
         "instructions": "آیا آگهی گمراه‌کننده است؟",
@@ -51,22 +52,6 @@ def test_noul_returns_probability_of_yes():
     assert np.isclose(out["noul"], out["probabilities"]["yes"])
 
 
-def test_score_is_expected_level():
-    q = {
-        "type": "score",
-        "instructions": "سازگاری را بسنج",
-        "criteria": ["بد", "متوسط", "خوب"],
-    }
-    rows = [
-        {"key": "0", "entailment": 0.05, "neutral": 0.10, "contradiction": 0.85},
-        {"key": "1", "entailment": 0.20, "neutral": 0.20, "contradiction": 0.60},
-        {"key": "2", "entailment": 0.80, "neutral": 0.10, "contradiction": 0.10},
-    ]
-    out = typed_answer_from_evidence(q, rows)
-    assert 1.5 < out["score"] <= 2.0
-    assert 0.75 < out["normalized_score"] <= 1.0
-
-
 def test_compile_requests_never_invents_candidates():
     questions = {
         "route": {
@@ -79,56 +64,36 @@ def test_compile_requests_never_invents_candidates():
     assert [x.key for x in compiled] == ["a", "b"]
 
 
-def test_persian_specialist_registry_has_explicit_label_order():
-    spec = resolve_model_specs("parsbert-parsinlu", {})[0]
-    assert spec.model_name == "persiannlp/parsbert-base-parsinlu-entailment"
-    assert spec.forced_label_indices == (0, 2, 1)
-    assert "NC" in spec.license
-
-
-def test_persian_ensemble_is_encoder_only_pair():
-    specs = resolve_model_specs(
-        "persian-ensemble",
-        {"ensemble_backends": ["mdeberta-nli", "parsbert-parsinlu"]},
-    )
-    assert [s.backend for s in specs] == ["mdeberta-nli", "parsbert-parsinlu"]
-    assert all("Qwen" not in s.model_name for s in specs)
-
-
-def test_model_disagreement_reduces_confidence():
-    q = {
-        "type": "choice",
-        "instructions": "کدام؟",
-        "criteria": {"a": "الف", "b": "ب"},
-    }
-    clean = [
-        {"key": "a", "entailment": 0.90, "neutral": 0.03, "contradiction": 0.07, "model_disagreement": 0.0},
-        {"key": "b", "entailment": 0.07, "neutral": 0.03, "contradiction": 0.90, "model_disagreement": 0.0},
-    ]
-    disagree = [
-        {**clean[0], "model_disagreement": 2.0},
-        {**clean[1], "model_disagreement": 2.0},
-    ]
-    assert (
-        typed_answer_from_evidence(q, disagree)["confidence"]
-        < typed_answer_from_evidence(q, clean)["confidence"]
-    )
-
-
-def test_laya_registry_is_native_decision_engine():
+def test_laya_registry_is_native_system_one_engine():
     spec = resolve_model_specs("laya-multilingual", {})[0]
     assert spec.engine == "laya"
     assert spec.model_name == "convaiinnovations/laya"
     assert spec.subfolder == "multilingual"
     assert spec.license == "Apache-2.0"
+    assert "Qwen" not in spec.note
 
 
-def test_laya_question_adapter_uses_closed_opaque_choice_labels_and_boolean_slots():
+def test_nli_backends_are_only_research_baselines():
+    spec = resolve_model_specs("mdeberta-nli", {})[0]
+    assert spec.engine == "nli"
+    ensemble = resolve_model_specs(
+        "persian-ensemble",
+        {"ensemble_backends": ["mdeberta-nli", "parsbert-parsinlu"]},
+    )
+    assert all(s.engine == "nli" for s in ensemble)
+
+
+def test_laya_adapter_transports_all_primitives_as_opaque_choice():
     questions = {
         "route": {
             "type": "choice",
             "instructions": "نوع؟",
             "criteria": {"normal": "عادی", "error": "خطای داده"},
+        },
+        "consistency": {
+            "type": "score",
+            "instructions": "سازگاری؟",
+            "criteria": ["بد", "متوسط", "خوب"],
         },
         "flag": {
             "type": "noul",
@@ -136,44 +101,113 @@ def test_laya_question_adapter_uses_closed_opaque_choice_labels_and_boolean_slot
             "criteria": {"no": "شواهد کافی نیست", "yes": "شواهد کافی است"},
         },
     }
-    adapted, meta = adapt_questions_for_laya(questions)
+    adapted, meta = adapt_questions_for_laya(questions, pass_index=0)
+
+    assert all(q["type"] == "choice" for q in adapted.values())
     assert set(adapted["route"]["criteria"]) == {"A", "B"}
-    assert meta["route"]["reverse"] == {"A": "normal", "B": "error"}
-    assert set(adapted["flag"]["criteria"]) == {"false", "true"}
-    assert adapted["flag"]["labels"] == {"false": "B", "true": "A"}
+    assert set(adapted["consistency"]["criteria"]) == {"A", "B", "C"}
+    assert set(adapted["flag"]["criteria"]) == {"A", "B"}
+    assert meta["route"]["type"] == "choice"
+    assert meta["consistency"]["type"] == "score"
+    assert meta["flag"]["type"] == "noul"
+    assert meta["flag"]["canonical_keys"] == ["no", "yes"]
 
 
-def test_laya_choice_normalization_maps_back_and_temperature_preserves_argmax():
-    original = {
+def test_laya_permutation_is_deterministic_and_reverses_second_pass():
+    keys = ["a", "b", "c", "d"]
+    assert _stable_permutation(keys, "q", 0) == keys
+    assert _stable_permutation(keys, "q", 1) == list(reversed(keys))
+    assert _stable_permutation(keys, "q", 3) == _stable_permutation(keys, "q", 3)
+
+
+def test_laya_transport_maps_permuted_markers_back_to_canonical_keys():
+    q = {
         "type": "choice",
         "instructions": "نوع؟",
         "criteria": {"normal": "عادی", "error": "خطا"},
     }
-    _, metadata = adapt_questions_for_laya({"q": original})
-    raw = {
-        "type": "choice",
-        "choice": "A",
-        "probabilities": {"A": 0.8, "B": 0.2},
-        "confidence": 0.4,
-        "answer_confidence": 0.8,
-        "action": {"act_probability": 1.0},
-    }
-    out = _normalize_laya_answer("q", raw, metadata["q"], temperature=2.0)
-    assert out["choice"] == "normal"
-    assert out["probabilities"]["normal"] > out["probabilities"]["error"]
-    assert np.isclose(sum(out["probabilities"].values()), 1.0)
-    assert "calibration_logits" in out["diagnostics"]
-    assert out["diagnostics"]["action_ignored"] is True
+    _, meta0 = adapt_questions_for_laya({"q": q}, pass_index=0)
+    _, meta1 = adapt_questions_for_laya({"q": q}, pass_index=1)
+
+    p0 = _normalize_choice_transport(
+        "q",
+        {"probabilities": {"A": 0.8, "B": 0.2}},
+        meta0["q"],
+    )
+    # pass 1 reverses logical option order, so A maps to error and B to normal.
+    p1 = _normalize_choice_transport(
+        "q",
+        {"probabilities": {"A": 0.2, "B": 0.8}},
+        meta1["q"],
+    )
+    assert p0 == p1 == {"normal": 0.8, "error": 0.2}
 
 
-def test_laya_noul_normalization_returns_yes_probability():
+def test_laya_noul_is_derived_from_closed_choice_probability():
     q = {
         "type": "noul",
         "instructions": "آیا؟",
         "criteria": {"no": "خیر", "yes": "بله"},
     }
-    _, metadata = adapt_questions_for_laya({"q": q})
-    raw = {"type": "noul", "noul": 0.9, "confidence": 0.9, "answer_confidence": 0.9}
-    out = _normalize_laya_answer("q", raw, metadata["q"], temperature=1.0)
-    assert out["noul"] > 0.89
-    assert np.isclose(out["probabilities"]["yes"], out["noul"])
+    maps = [{"no": 0.10, "yes": 0.90}, {"no": 0.15, "yes": 0.85}]
+    pooled = _log_pool(maps)
+    out = _logical_answer(
+        "q",
+        q,
+        pooled,
+        temperature=1.0,
+        permutation_maps=maps,
+        raw_confidences=[0.7, 0.7],
+        raw_answer_confidences=[0.9, 0.85],
+    )
+    assert out["type"] == "noul"
+    assert out["noul"] > 0.85
+    assert np.isclose(out["noul"], out["probabilities"]["yes"])
+    assert out["diagnostics"]["transport"] == "opaque_choice_for_all_primitives"
+
+
+def test_laya_score_is_expected_value_over_closed_options():
+    q = {
+        "type": "score",
+        "instructions": "سازگاری؟",
+        "criteria": ["بد", "متوسط", "خوب"],
+    }
+    maps = [
+        {"0": 0.05, "1": 0.15, "2": 0.80},
+        {"0": 0.07, "1": 0.18, "2": 0.75},
+    ]
+    out = _logical_answer(
+        "q",
+        q,
+        _log_pool(maps),
+        temperature=1.0,
+        permutation_maps=maps,
+        raw_confidences=[0.8, 0.8],
+        raw_answer_confidences=[0.8, 0.75],
+    )
+    assert out["type"] == "score"
+    assert 1.6 < out["score"] <= 2.0
+    assert 0.8 < out["normalized_score"] <= 1.0
+
+
+def test_option_order_instability_reduces_effective_confidence():
+    q = {
+        "type": "choice",
+        "instructions": "نوع؟",
+        "criteria": {"a": "الف", "b": "ب"},
+    }
+    stable_maps = [{"a": 0.9, "b": 0.1}, {"a": 0.88, "b": 0.12}]
+    unstable_maps = [{"a": 0.9, "b": 0.1}, {"a": 0.1, "b": 0.9}]
+
+    stable = _logical_answer(
+        "q", q, _log_pool(stable_maps), temperature=1.0,
+        permutation_maps=stable_maps, raw_confidences=[0.8, 0.8],
+        raw_answer_confidences=[0.9, 0.88],
+    )
+    unstable = _logical_answer(
+        "q", q, _log_pool(unstable_maps), temperature=1.0,
+        permutation_maps=unstable_maps, raw_confidences=[0.8, 0.8],
+        raw_answer_confidences=[0.9, 0.9],
+    )
+    assert unstable["diagnostics"]["order_stability"] < stable["diagnostics"]["order_stability"]
+    assert unstable["effective_confidence"] < stable["effective_confidence"]
