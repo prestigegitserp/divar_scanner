@@ -1,3 +1,3 @@
-"""Divar rental anomaly scanner."""
+"""Divar rental anomaly scanner with bounded decision models."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
