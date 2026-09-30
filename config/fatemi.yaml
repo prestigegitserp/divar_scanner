@@ -42,6 +42,17 @@ decision:
   enabled: true
   backend: "mdeberta-nli"
   model: "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
+  # Alternative non-generative backends:
+  #   parsbert-parsinlu  (Persian specialist; CC-BY-NC-SA-4.0)
+  #   mbert-parsinlu     (Persian specialist; CC-BY-NC-SA-4.0)
+  #   persian-ensemble   (fuses mDeBERTa + ParsBERT evidence before option softmax)
+  ensemble_backends:
+    - "mdeberta-nli"
+    - "parsbert-parsinlu"
+  ensemble_weights:
+    mdeberta-nli: 0.55
+    parsbert-parsinlu: 0.45
+  calibration_file: null
   device: "auto"
   strict: true
   top_k: 60
