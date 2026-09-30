@@ -11,23 +11,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_repository_fatemi_config_parses_cleanly():
     cfg = load_config(ROOT / "config" / "fatemi.yaml")
-    assert cfg.get("semantic.models.local_qwen") == "Qwen/Qwen3-4B"
-    assert cfg.get("semantic.models.local_aya") == "CohereLabs/aya-expanse-8b"
-    priority = cfg.get("semantic.provider_priority")
-    assert isinstance(priority, list)
-    assert "cohere" in priority
-    assert all("\\n" not in str(x) for x in priority)
+    assert cfg.get("decision.backend") == "mdeberta-nli"
+    assert (
+        cfg.get("decision.model")
+        == "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
+    )
+    assert cfg.get("features.rent_to_deposit_multipliers") == [25.0, 30.0, 35.0]
+    assert cfg.get("semantic") is None
 
 
-def test_colab_notebook_avoids_package_namespace_collision():
+def test_colab_notebook_avoids_package_namespace_collision_and_compiles():
     path = ROOT / "colab" / "Divar_Fatemi_Anomaly_Scanner.ipynb"
     notebook = json.loads(path.read_text(encoding="utf-8"))
-    code = "\n".join(
+    code_cells = [
         "".join(cell.get("source", []))
         for cell in notebook["cells"]
         if cell.get("cell_type") == "code"
-    )
+    ]
+    code = "\n".join(code_cells)
     assert "/content/divar_scanner_repo" in code
     assert "REPO = '/content/divar_scanner_repo'" in code
     assert "endswith('/src/divar_scanner/__init__.py')" in code
-    assert "local-qwen" in code
+    assert "mdeberta-nli" in code
+    assert "local-qwen" not in code
+    for i, source in enumerate(code_cells):
+        compile(source, f"colab-cell-{i}", "exec")
