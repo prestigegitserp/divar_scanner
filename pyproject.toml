@@ -22,6 +22,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4,<9", "ruff>=0.6,<1"]
+local = [
+  "transformers>=4.51,<6",
+  "accelerate>=1.0,<2",
+  "bitsandbytes>=0.45,<1",
+  "sentencepiece>=0.2,<1",
+]
 
 [project.scripts]
 divar-scanner = "divar_scanner.cli:main"
