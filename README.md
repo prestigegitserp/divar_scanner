@@ -204,6 +204,40 @@ divar-scanner export-laya-training \
 
 The exporter uses the same opaque option transport as inference.
 
+## Colab / Divar connectivity
+
+The default Fatemi crawler now uses the public server-rendered search page:
+
+```text
+https://divar.ir/s/tehran/rent-apartment/fatemi
+```
+
+and parses the page's public `window.__PRELOADED_STATE__` plus JSON-LD. It does **not** need the
+`api.divar.ir/v8/places/cities/1/districts` endpoint in the default Colab flow.
+
+This specifically avoids the common Colab/cloud failure:
+
+```text
+ConnectTimeout: Connection to api.divar.ir timed out
+```
+
+Relevant config:
+
+```yaml
+crawl:
+  transport: web
+  search_page_url: https://divar.ir/s/tehran/rent-apartment/fatemi
+  district_slug: fatemi
+```
+
+Set `transport: api` only if `api.divar.ir` is reachable from your runtime. `transport: auto`
+tries the public web page first and then the legacy API. No proxy rotation, CAPTCHA bypass, or
+access-control circumvention is used.
+
+The SSR mode can expose fewer rows than the API pagination path. The run metadata records the
+actual source URLs and listing count, and the crawler stops when another rendered page yields no
+new listing tokens rather than looping or increasing request pressure.
+
 ## Google Colab
 
 Open:
