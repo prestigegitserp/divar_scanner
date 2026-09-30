@@ -643,7 +643,7 @@ def create_decision_engine(
     backend = str(
         backend_override
         or os.getenv("DECISION_BACKEND")
-        or decision_config.get("backend", "mdeberta-nli")
+        or decision_config.get("backend", "laya-multilingual")
     ).lower()
     specs = resolve_model_specs(backend, decision_config)
     temperatures = load_decision_temperatures(decision_config)
@@ -879,7 +879,7 @@ def apply_decisions(
         }
 
     backend = str(
-        os.getenv("DECISION_BACKEND") or d.get("backend", "mdeberta-nli")
+        os.getenv("DECISION_BACKEND") or d.get("backend", "laya-multilingual")
     ).lower()
     specs = resolve_model_specs(backend, d)
 
