@@ -1,234 +1,351 @@
-# Divar Scanner — Tehran Fatemi Rental Anomaly Lab
+# Divar Scanner v0.2 — Fatemi Tehran Rental Risk Lab
 
-A production-minded research pipeline for collecting **public apartment-rental listings in Tehran / Fatemi** from Divar, normalizing Persian real-estate data, detecting data errors and local-market outliers, finding near-duplicate ads, and optionally using **TypeSafe Jev** for a bounded semantic review pass.
+A production-minded research pipeline for collecting **public apartment-rental listings around Fatemi, Tehran**, normalizing Persian real-estate data, detecting data-quality errors and local-market anomalies, clustering copy/paste listings, and optionally adding a bounded semantic review from several interchangeable AI providers.
 
-> **Important:** the system produces a **suspicion / review score**, not a legal or factual determination of fraud. A cheap listing, an unusual property, or a parser mismatch can all be legitimate. High-scoring rows are a queue for human verification.
+> **Important:** this project generates **review-priority / suspicion signals**, not a legal or factual determination of fraud. A cheap listing, an unusual property, a stale ad, or a parser error can all be legitimate.
 
-## Why this architecture
-
-`Fraud != anomaly` and `anomaly != fraud`. The pipeline intentionally keeps the evidence channels separate:
-
-1. **Data quality** — impossible values and structured-vs-text contradictions.
-2. **Market anomaly** — robust peer-group deviations + Isolation Forest.
-3. **Duplicate/bait signal** — character n-gram similarity between ads.
-4. **Semantic review** — optional Jev `choice` + `noul` + `score` decisions only on the prefiltered shortlist.
-5. **Final triage** — weighted score with explainable `flag_reasons` and `normal / review / high` bands.
+## Architecture
 
 ```text
-Divar public listing/search responses
+Divar public listing/search payloads
               │
               ▼
-     polite crawler + cache
+     polite crawler + disk cache
               │
               ▼
- Persian normalization / PII redaction
+ Persian normalization / phone redaction
               │
-      ┌───────┼───────────┐
-      ▼       ▼           ▼
- sanity   local peer   near-duplicate
- checks   statistics     detector
-      └───────┼───────────┘
-              ▼
-       cheap prefilter
+              ├───────── deterministic consistency checks
               │
-              ▼  top-K only
-        Jev semantic pass
+              ├───────── robust peer-group Median/MAD
               │
-              ▼
-  explainable suspicion score
+              ├───────── Isolation Forest
               │
-      CSV / Parquet / HTML
+              ├───────── OOF property-price expectation model
+              │              (no price→price target leakage)
+              │
+              ├───────── Local Outlier Factor
+              │
+              └───────── duplicate similarity graph
+                               │
+                               ▼
+                         cheap prefilter
+                               │
+                   top suspicious candidates only
+                               │
+                               ▼
+           optional typed/structured semantic backend
+        Jev / Groq / Cerebras / Gemini / Cohere Aya /
+          OpenRouter / Hugging Face / custom OpenAI API
+                               │
+                               ▼
+          confidence-aware multi-view evidence fusion
+                               │
+                  ┌────────────┼────────────┐
+                  ▼            ▼            ▼
+               normal        review        high
 ```
 
-## Fatemi-specific defaults
+## The Colab import bug that v0.2 fixes
 
-`config/fatemi.yaml` ships with:
+Do **not** clone this repository to `/content/divar_scanner` inside Colab.
 
-- city: Tehran (`city_id=1`)
-- category: `apartment-rent`
-- district query/aliases: `فاطمی`, `میدان فاطمی`, `دکتر فاطمی`
-- runtime district-ID resolution from Divar's city/district data
-- maximum 500 listings by default
-- 1.2 s request delay + jitter
-- phone-number redaction in description text
-- equivalent-deposit conversion factor of `30x` monthly rent (configurable assumption)
+The Python package is also named `divar_scanner`. Colab can keep `/content` on `sys.path`, and a clone directory with the same name can be discovered as a PEP-420 namespace package before the editable `src/divar_scanner` package. The symptom is exactly:
 
-The crawler **refuses to fall back to all of Tehran** if it cannot resolve Fatemi to a Divar district ID. This prevents accidental broad crawling.
+```text
+ModuleNotFoundError: No module named 'divar_scanner.pipeline'
+```
 
-## Colab — recommended start
+The notebook now clones to:
 
-Open `colab/Divar_Fatemi_Anomaly_Scanner.ipynb` in Google Colab. It:
+```text
+/content/divar_scanner_repo
+```
 
-1. clones this repository,
-2. installs the package,
-3. lets you choose the crawl size,
-4. optionally asks for a Jev key without writing it to disk,
-5. runs the full pipeline,
-6. displays the highest-risk rows and generated report paths.
+and then explicitly places:
 
-No Jev key is required. Without one, the project still runs end-to-end and uses deterministic semantic heuristics for the semantic component.
+```text
+/content/divar_scanner_repo/src
+```
 
-## Local quick start
+at the front of `sys.path`, clears stale `divar_scanner.*` modules, and asserts the imported package origin before doing any work.
+
+## Colab — recommended
+
+Open:
+
+```text
+colab/Divar_Fatemi_Anomaly_Scanner.ipynb
+```
+
+The first cells:
+
+1. clone into the non-conflicting `divar_scanner_repo` directory,
+2. install the package with the current kernel's Python,
+3. print pandas / NumPy / scikit-learn / PyArrow versions,
+4. assert the package origin,
+5. run `python -m divar_scanner.doctor --network`,
+6. then start the actual crawl.
+
+For a first run use `MAX_LISTINGS=100` or `200`.
+
+## Semantic provider support
+
+External semantic inference is optional. The statistical/graph pipeline runs without any API key.
+
+Set one provider in the Colab dropdown, or export the corresponding environment variable:
+
+| Provider | Env var | Default model / route | Notes |
+|---|---|---|---|
+| TypeSafe Jev hosted | `JEV_API_KEY` | `jev-1.13.0` | Native typed choice/score/noul |
+| TypeSafe official | `TYPESAFE_API_KEY` | `jev-1.13.0` | Native typed decision endpoint |
+| Groq | `GROQ_API_KEY` | `openai/gpt-oss-20b` | OpenAI-compatible, structured JSON |
+| Cerebras | `CEREBRAS_API_KEY` | `gpt-oss-120b` | OpenAI-compatible |
+| Google Gemini | `GEMINI_API_KEY` | `gemini-3.8-flash` | OpenAI compatibility endpoint |
+| Cohere / Aya | `COHERE_API_KEY` | `c4ai-aya-expanse-32b` | Trial keys are useful for prototyping |
+| OpenRouter | `OPENROUTER_API_KEY` | `openrouter/free` | Free-model router for low-volume prototypes |
+| Hugging Face | `HF_TOKEN` | `openai/gpt-oss-120b:fastest` | Uses Inference Providers credits |
+| Custom | `OPENAI_COMPAT_API_KEY` + base/model vars | your model | Any compatible Chat Completions endpoint |
+
+For a custom endpoint:
 
 ```bash
-git clone https://github.com/prestigegitserp/divar_scanner.git
-cd divar_scanner
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -e '.[dev]'
-pytest
-
-divar-scanner run --config config/fatemi.yaml --max-listings 200
+export OPENAI_COMPAT_API_KEY='...'
+export OPENAI_COMPAT_BASE_URL='https://your-provider.example/v1'
+export OPENAI_COMPAT_MODEL='your-model'
+export SEMANTIC_PROVIDER='custom-openai-compatible'
 ```
 
-Disable Jev explicitly:
+The compatibility layer first tries strict JSON Schema, then JSON-object mode, then prompt-constrained JSON. Provider failures do not kill the pipeline; the row keeps the deterministic fallback semantic score and the run metadata records the error.
 
-```bash
-divar-scanner run --config config/fatemi.yaml --max-listings 200 --no-jev
+### Provider ensemble
+
+By default:
+
+```yaml
+semantic:
+  ensemble_max_providers: 1
 ```
 
-### Jev configuration
+Set it to `2` or more only when you intentionally want multi-provider consensus. Probabilities are averaged and the highest-confidence provider supplies the class label.
 
-Hosted gateway:
+## Why the detection is no longer a shallow "outlier = fraud" model
 
-```bash
-export JEV_API_KEY='jv_live_...'
+### 1. Data-quality evidence
+
+Cross-field checks detect examples like:
+
+```text
+structured: 38 m² / 1 room / no parking
+description: 180 m² / 3 rooms / parking
 ```
 
-Official TypeSafe endpoint:
+This is primarily a **data-error / inconsistency signal**, not automatic fraud.
 
-```bash
-export TYPESAFE_API_KEY='...'
-```
+### 2. Robust local peer statistics
 
-You can override either endpoint with `JEV_ENDPOINT`. The implementation follows the documented typed-decision interface: one `state`, multiple `questions`, and `choice / score / noul` answers. Secrets are read only from environment variables and are never committed.
-
-## What gets collected
-
-The crawler reads public listing/search payloads and detail payloads and normalizes common fields including:
-
-- listing token / URL
-- title and description
-- neighborhood
-- area (m²)
-- rooms
-- Shamsi year built
-- deposit (Toman)
-- monthly rent (Toman)
-- parking / elevator / storage when present
-- floor and the raw structured field map
-
-It intentionally does **not** call contact-info endpoints, login/OTP flows, or phone-number APIs. Phone-like strings in descriptions are redacted by default.
-
-## Market model
-
-Three price views are created:
+Price views:
 
 ```text
 deposit_per_m2
 rent_per_m2
-equivalent_deposit_per_m2 = (deposit + rent * multiplier) / area
+equivalent_deposit_per_m2
 ```
 
-The default `multiplier=30` is an explicit modeling assumption, not a universal market truth. Change it in the YAML or evaluate alternatives.
+are compared hierarchically against:
 
-Peer comparisons are hierarchical:
+1. neighborhood + area bucket + rooms,
+2. neighborhood + area bucket,
+3. neighborhood,
+4. global fallback.
 
-1. neighborhood + area bucket + rooms
-2. neighborhood + area bucket
-3. neighborhood
-4. global fallback
+Median/MAD is used instead of mean/std because housing prices have heavy tails.
 
-For each price view, a robust deviation based on median/MAD is calculated. That signal is blended with an Isolation Forest trained on numeric listing features.
+### 3. Isolation Forest
 
-## Cross-field consistency
+A multivariate Isolation Forest checks unusual combinations of area, room count, age, price views, and text length.
 
-The deterministic checker catches examples such as:
+### 4. OOF price expectation model
 
-- structured `65 m²` but description says `140 متری`
-- structured `1 room` but text says `سه خواب`
-- structured `parking=False` but description says `دارای پارکینگ`
-- impossible area / room / construction-year ranges
-- extreme room-to-area combinations
+For enough listings (roughly 40+), the pipeline trains a cross-validated `HistGradientBoostingRegressor` on **property attributes and neighborhood**, not on deposit/rent themselves.
 
-These are treated primarily as **data-quality evidence**, not automatically as fraud.
+Each listing is predicted by a fold that did not train on that listing:
 
-## Duplicate detection
+```text
+property attributes + neighborhood
+                │
+                ▼
+       expected equivalent deposit
+                │
+                ▼
+       signed log price residual
+                │
+                ▼
+       price_model_anomaly_score
+```
 
-Titles + descriptions are transformed with Persian-friendly character `3–5`-gram TF-IDF. A nearest-neighbor search estimates similarity to the most similar other listing. This catches copy/paste listings even when spacing, punctuation, or a few words differ.
+This avoids the common leakage mistake of predicting a price target using variables that algebraically define that target.
 
-The review queue records the nearest similar listing token for manual inspection.
+### 5. Local Outlier Factor
 
-## Jev semantic pass
+LOF adds a density view: a point may be far less plausible when its *combination* of characteristics lives in a sparse region even when each field individually looks reasonable.
 
-Only candidates above `semantic.min_prefilter_score` are sent to Jev, capped at `semantic.top_k`. Each request asks independent typed questions:
+### 6. Duplicate graph, not just duplicate pairs
 
-- `classification`: plausible / data_error / market_outlier / misleading_or_bait / needs_review
-- `semantic_suspicion`: calibrated yes/no probability
-- `manual_review`: calibrated yes/no probability
-- `consistency`: ordered consistency score
+Persian-friendly character 3–5-gram TF-IDF creates similarity edges between listings. Connected components become duplicate clusters.
 
-The prompt explicitly tells the model that market price alone is not proof of fraud.
+The pipeline records:
 
-Current Jev API documentation: https://www.jevtypesafeai.com/jev/api
+```text
+duplicate_cluster_size
+duplicate_cluster_neighborhoods
+duplicate_cluster_price_span
+duplicate_bait_score
+```
+
+A repeated template is not inherently suspicious. A repeated template that appears with conflicting neighborhoods and large price changes is stronger review evidence.
+
+### 7. Semantic review on a shortlist
+
+The semantic model sees deterministic evidence such as:
+
+- field contradictions,
+- local market score,
+- OOF price ratio,
+- duplicate-cluster signals,
+- title and description.
+
+It must choose among:
+
+```text
+plausible
+data_error
+market_outlier
+misleading_or_bait
+needs_review
+```
+
+and returns suspicion/review/consistency/confidence values.
+
+### 8. Confidence-aware fusion + uncertainty
+
+A low-confidence heuristic or LLM opinion is down-weighted. The final system also calculates detector disagreement:
+
+```text
+uncertainty_score
+```
+
+so cases where market, duplicate, semantic and data-quality channels disagree can be sent to humans rather than auto-labeled.
+
+## Fatemi defaults
+
+`config/fatemi.yaml` uses:
+
+- Tehran city ID `1`
+- category `apartment-rent`
+- aliases `فاطمی`, `میدان فاطمی`, `دکتر فاطمی`
+- runtime district-ID resolution
+- conservative request delay + jitter
+- response cache
+- phone-like string redaction
+
+If Fatemi cannot be resolved to a Divar district, the crawler **refuses to silently fall back to all of Tehran**.
+
+## Local usage
+
+```bash
+git clone https://github.com/prestigegitserp/divar_scanner.git divar_scanner_repo
+cd divar_scanner_repo
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+
+divar-scanner-doctor
+pytest
+divar-scanner run --config config/fatemi.yaml --max-listings 150 --no-jev
+```
+
+The legacy `--no-jev` flag disables all external semantic providers; the name is retained for CLI compatibility.
+
+To analyze an already normalized dataset:
+
+```bash
+divar-scanner analyze --config config/fatemi.yaml --input listings.parquet
+```
 
 ## Outputs
 
-Each run creates timestamped files under `outputs/fatemi/`:
+Runs write timestamped artifacts to `outputs/fatemi/`:
 
-- `listings_scored_*.csv`
-- `listings_scored_*.parquet`
-- `review_queue_*.csv`
-- `report_*.html`
-- `run_meta_*.json`
+```text
+listings_scored_*.csv
+listings_scored_*.parquet
+review_queue_*.csv
+report_*.html
+run_meta_*.json
+```
 
-The HTML report contains score distribution, a market scatter plot and the top review queue with links back to Divar.
-
-### Key columns
+Important columns include:
 
 | Column | Meaning |
 |---|---|
-| `data_quality_score` | missing/impossible/contradictory fields |
-| `market_anomaly_score` | unusual versus local peers |
-| `duplicate_similarity` | similarity to nearest other ad |
-| `semantic_score` | Jev result, or deterministic fallback |
-| `suspicion_score` | final blended triage score |
-| `risk_band` | `normal`, `review`, `high` |
-| `flag_reasons` | human-readable evidence summary |
+| `data_quality_score` | impossible/missing/cross-field mismatch evidence |
+| `robust_market_anomaly` | robust local-peer price deviation |
+| `isolation_anomaly_score` | Isolation Forest view |
+| `price_model_anomaly_score` | OOF property-price residual |
+| `price_model_ratio` | actual / OOF expected equivalent deposit |
+| `lof_anomaly_score` | local-density anomaly |
+| `duplicate_bait_score` | graph-cluster inconsistency |
+| `semantic_score` | semantic misleading/bait probability |
+| `semantic_confidence` | semantic backend confidence |
+| `uncertainty_score` | disagreement across detector families |
+| `suspicion_score` | fused evidence score |
+| `review_priority_score` | suspicion + uncertainty + review probability |
+| `risk_band` | normal / review / high |
+| `flag_reasons` | human-readable evidence |
 
-## Re-analyze an existing dataset
-
-If you already have a normalized CSV/Parquet with the expected columns:
+## Diagnostics
 
 ```bash
-divar-scanner analyze --config config/fatemi.yaml --input my_listings.parquet
+python -m divar_scanner.doctor
+python -m divar_scanner.doctor --network
 ```
 
-## Tests and CI
+The doctor prints the exact imported package path and dependency versions. It exits non-zero if the package is being imported from a wrong path.
 
-```bash
-pytest
-python -m compileall -q src
-```
+## CI
 
-GitHub Actions runs both checks on pushes and pull requests.
+GitHub Actions now tests:
 
-## Responsible crawling and schema drift
+- Python 3.10
+- Python 3.11
+- Python 3.12
+- editable packaging/import
+- full pytest suite
+- bytecode compilation
+- simulated Colab layout under `/tmp/content/divar_scanner_repo`
+- end-to-end synthetic dataset analysis including OOF/LOF/duplicate/semantic-fallback layers
 
-Divar's public web response schema is not a stable public contract and may change. The project uses conservative retries, caching, a low request rate, and stops on HTTP 401/403/429 instead of attempting to bypass controls. If Divar changes its web schema or access policy, update the adapter rather than increasing request aggression.
+## Responsible crawling
 
-Divar also maintains the **Kenar/Open Platform** APIs for authorized integrations; its SDK documents search and district assets. For long-lived production use, prefer an official authorized API when your use case and access allow it.
+The crawler uses public listing/search responses, conservative retry/delay behavior, caching, and stops on 401/403/429 rather than attempting to bypass access controls. It does not use OTP/login flows or contact-info endpoints.
 
-## Ideas for the next iteration
+Divar's public web response schema is not a stable contract. If schema or access policy changes, update the adapter rather than increasing request aggression.
 
-- time-series snapshots for price-change and repost behavior
-- learned ranking model from human review labels (LightGBM / XGBoost)
-- image perceptual-hash duplicate detection
-- geospatial peer groups using coordinates rather than district labels
-- conformal thresholds for review queues
-- active learning: sample uncertain cases for manual labeling
-- drift dashboards for monthly rent/deposit distributions
+## Next high-value upgrades
+
+The biggest remaining improvements require **time and labels**, not another unsupervised trick:
+
+- scheduled snapshots to detect reposting and suspicious price changes,
+- advertiser/entity graph if a legitimate public identifier is available,
+- image perceptual hashes for reused property photos,
+- geospatial peer groups if coordinates become available,
+- manual-review labels + LightGBM/XGBoost meta-ranker,
+- probability calibration (isotonic / Platt) on held-out human labels,
+- conformal review thresholds,
+- active learning for uncertain cases,
+- drift monitoring by month and neighborhood.
 
 ## License
 
-MIT. Use responsibly and verify applicable site terms and local law before large-scale collection or operational deployment.
+MIT. Verify applicable site terms and local law before large-scale collection or operational deployment.
