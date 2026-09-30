@@ -90,6 +90,19 @@ def _available_std(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
     return values.std(axis=1, skipna=True).fillna(0.0)
 
 
+def _decision_trust_multiplier(config: Config) -> tuple[str, float]:
+    stage = str(config.get("decision.trust_stage", "bootstrap")).strip().lower()
+    key_by_stage = {
+        "bootstrap": "bootstrap_decision_multiplier",
+        "calibrated": "calibrated_decision_multiplier",
+        "adapted": "adapted_decision_multiplier",
+    }
+    if stage not in key_by_stage:
+        stage = "bootstrap"
+    multiplier = float(config.get(f"scoring.{key_by_stage[stage]}", 0.25))
+    return stage, float(np.clip(multiplier, 0.0, 1.0))
+
+
 def _numeric_series(
     frame: pd.DataFrame,
     column: str,
@@ -131,7 +144,8 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     decision_conf = _numeric_series(
         out, "decision_effective_confidence", np.nan
     ).clip(0, 1)
-    confidence_weight = decision_conf.where(evaluated, np.nan)
+    trust_stage, trust_multiplier = _decision_trust_multiplier(config)
+    confidence_weight = (decision_conf * trust_multiplier).where(evaluated, np.nan)
 
     # Channel 1 — data correctness. This is not fraud.
     data_decision = _numeric_series(
@@ -245,6 +259,8 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
         1,
     )
     out["overall_review_risk"] = out["review_priority_score"]
+    out["decision_trust_stage"] = trust_stage
+    out["decision_trust_multiplier"] = trust_multiplier
 
     review_t = float(s.get("review_threshold", 0.55))
     high_t = float(s.get("high_risk_threshold", 0.75))
