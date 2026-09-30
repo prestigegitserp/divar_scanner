@@ -1,1 +1,3 @@
-"""Divar rental anomaly scanner."""\n\n__version__ = "0.2.0"\n
+"""Divar rental anomaly scanner."""
+
+__version__ = "0.2.0"
