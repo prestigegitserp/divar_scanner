@@ -242,6 +242,7 @@ def run_pipeline(
             "human_data_error",
             "human_manual_review",
             "human_consistency_level",
+            "human_label_confidence",
             "human_notes",
         ):
             if label_col not in review_df:
@@ -257,6 +258,7 @@ def run_pipeline(
             "human_data_error",
             "human_manual_review",
             "human_consistency_level",
+            "human_label_confidence",
             "human_notes",
         ):
             if label_col not in annotation_df:
