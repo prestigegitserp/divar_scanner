@@ -89,3 +89,31 @@ def test_abstention_raises_review_priority_not_misleading_probability():
     abst = out[out['decision_abstain'] == True].iloc[0]  # noqa: E712
     assert np.isclose(non['misleading_risk_score'], abst['misleading_risk_score'])
     assert abst['review_priority_score'] > non['review_priority_score']
+
+
+def test_bootstrap_stage_caps_decision_influence():
+    base = _decision_row(False)
+    bootstrap = _cfg()
+    bootstrap.raw.setdefault("decision", {})["trust_stage"] = "bootstrap"
+    bootstrap.raw["scoring"]["bootstrap_decision_multiplier"] = 0.25
+
+    adapted = _cfg()
+    adapted.raw.setdefault("decision", {})["trust_stage"] = "adapted"
+    adapted.raw["scoring"]["adapted_decision_multiplier"] = 1.0
+
+    # Make the bounded model strongly favor misleading while deterministic duplicate
+    # evidence stays low; only trust stage should change its influence.
+    base["decision_bait_probability"] = 0.95
+    base["decision_disposition_probs_json"] = json.dumps({
+        "plausible": 0.01, "data_error": 0.01, "market_outlier": 0.01,
+        "misleading_or_bait": 0.95, "ambiguous_mixed": 0.02,
+    })
+    base["decision_effective_confidence"] = 0.95
+
+    low = _finalize_scores(pd.DataFrame([base]), bootstrap).iloc[0]
+    high = _finalize_scores(pd.DataFrame([base]), adapted).iloc[0]
+    assert low["decision_trust_stage"] == "bootstrap"
+    assert high["decision_trust_stage"] == "adapted"
+    assert low["decision_trust_multiplier"] == 0.25
+    assert high["decision_trust_multiplier"] == 1.0
+    assert low["misleading_risk_score"] < high["misleading_risk_score"]
