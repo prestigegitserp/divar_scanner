@@ -208,15 +208,14 @@ def _finalize_scores(df: pd.DataFrame, config: Config) -> pd.DataFrame:
 
     model_uncertainty = pd.Series(0.0, index=out.index)
     model_uncertainty.loc[evaluated] = (
-        1.0 - pd.to_numeric(
-            out.loc[evaluated, "decision_effective_confidence"], errors="coerce"
-        ).fillna(0.0)
+        1.0 - decision_conf.loc[evaluated].fillna(0.0)
     ).clip(0, 1)
+    coherence_series = _numeric_series(
+        out, "decision_coherence_score", np.nan
+    )
     coherence_uncertainty = pd.Series(0.0, index=out.index)
     coherence_uncertainty.loc[evaluated] = (
-        1.0 - pd.to_numeric(
-            out.loc[evaluated, "decision_coherence_score"], errors="coerce"
-        ).fillna(0.0)
+        1.0 - coherence_series.loc[evaluated].fillna(0.0)
     ).clip(0, 1)
     out["uncertainty_score"] = np.clip(
         0.45 * model_uncertainty
