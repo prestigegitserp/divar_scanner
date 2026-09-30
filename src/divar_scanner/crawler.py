@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 from tqdm.auto import tqdm
@@ -261,6 +261,7 @@ class DivarCrawler:
         self.category = str(c.get("category", "apartment-rent"))
         self.web_category_slug = str(c.get("web_category_slug", "rent-apartment"))
         self.district_slug = str(c.get("district_slug", "")).strip()
+        self.search_page_url = str(c.get("search_page_url", "")).strip()
         self.transport = str(c.get("transport", "auto")).strip().lower()
         self.max_listings = int(c.get("max_listings", 500))
         self.max_pages = int(c.get("max_pages", 50))
@@ -489,6 +490,16 @@ class DivarCrawler:
         return all_cards[: self.max_listings]
 
     def _web_search_base_url(self) -> str:
+        if self.search_page_url:
+            parsed = urlparse(self.search_page_url)
+            if parsed.scheme != "https" or parsed.netloc not in {"divar.ir", "www.divar.ir"}:
+                raise ValueError(
+                    "crawl.search_page_url must be an https://divar.ir public search URL"
+                )
+            if not parsed.path.startswith("/s/"):
+                raise ValueError("crawl.search_page_url must point to a Divar /s/ search page")
+            return self.search_page_url.rstrip("/")
+
         if not _SLUG_RE.fullmatch(self.city_slug):
             raise ValueError(f"Unsafe/invalid city_slug: {self.city_slug!r}")
         if not _SLUG_RE.fullmatch(self.web_category_slug):
