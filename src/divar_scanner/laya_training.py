@@ -62,9 +62,10 @@ def _noul_gold(label: Any, confidence: float) -> dict[str, Any] | None:
     target = _bool_target(label)
     if target is None:
         return None
-    probs = _soft_target(["false", "true"], target, confidence)
+    canonical = "yes" if target == "true" else "no"
+    probs = _soft_target(["no", "yes"], canonical, confidence)
     return {
-        "label": 1 if target == "true" else 0,
+        "label": canonical,
         "probabilities": probs,
     }
 
@@ -92,25 +93,30 @@ def _adapt_gold_for_laya(
     gold: dict[str, dict[str, Any]],
     metadata: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
+    """Map logical gold labels to the same opaque choice markers used at inference."""
     out: dict[str, dict[str, Any]] = {}
     for qid, g in gold.items():
         meta = metadata[qid]
-        qtype = meta["type"]
-        if qtype == "choice":
-            forward = meta["forward"]
-            label = str(g["label"])
-            probs = {
-                forward[str(k)]: float(v)
-                for k, v in g["probabilities"].items()
-            }
-            out[qid] = {
-                **g,
-                "label": forward[label],
-                "probabilities": probs,
-            }
-        else:
-            # score keys are already "0".."K-1"; noul gold already uses false/true.
-            out[qid] = g
+        forward = meta["forward"]
+        label = str(g["label"])
+        if label not in forward:
+            raise ValueError(f"gold label {label!r} is not valid for {qid!r}")
+        probs = {
+            forward[str(k)]: float(v)
+            for k, v in g["probabilities"].items()
+            if str(k) in forward
+        }
+        if len(probs) != len(forward):
+            missing = sorted(set(forward.values()) - set(probs))
+            raise ValueError(f"gold probabilities for {qid!r} missed opaque options: {missing}")
+        mapped = {
+            **g,
+            "label": forward[label],
+            "probabilities": probs,
+        }
+        # Laya transport is always a closed choice; retain original score target only
+        # as metadata for audit, not as the model-facing label.
+        out[qid] = mapped
     return out
 
 
@@ -151,68 +157,85 @@ def export_laya_training_frame(
         token = str(row.get("token") or row_index)
         confidence = _confidence(row)
 
-        full_q = {
-            "disposition": questions["disposition"],
-            "manual_review": questions["manual_review"],
-        }
-        full_gold: dict[str, dict[str, Any]] = {}
-        g = _choice_gold(questions["disposition"], row.get("human_disposition"), confidence)
-        if g:
-            full_gold["disposition"] = g
-        g = _noul_gold(row.get("human_manual_review"), confidence)
-        if g:
-            full_gold["manual_review"] = g
-        case = _case(
-            case_id=f"{token}:full",
-            state=build_listing_state(row, view="full"),
-            questions=full_q,
-            gold=full_gold,
-            split_hint="full",
-        )
-        if case:
-            cases.append(case)
+        packs = [
+            (
+                "full",
+                {
+                    "disposition": questions["disposition"],
+                    "manual_review": questions["manual_review"],
+                },
+                {
+                    "disposition": _choice_gold(
+                        questions["disposition"], row.get("human_disposition"), confidence
+                    ),
+                    "manual_review": _noul_gold(
+                        row.get("human_manual_review"), confidence
+                    ),
+                },
+            ),
+            (
+                "content",
+                {
+                    "integrity_class": questions["integrity_class"],
+                    "consistency": questions["consistency"],
+                    "data_error_evidence": questions["data_error_evidence"],
+                },
+                {
+                    "integrity_class": _choice_gold(
+                        questions["integrity_class"],
+                        row.get("human_integrity_class"),
+                        confidence,
+                    ),
+                    "consistency": _score_gold(
+                        questions["consistency"],
+                        row.get("human_consistency_level"),
+                        confidence,
+                    ),
+                    "data_error_evidence": _noul_gold(
+                        row.get("human_data_error"), confidence
+                    ),
+                },
+            ),
+            (
+                "bait",
+                {
+                    "duplicate_pattern": questions["duplicate_pattern"],
+                    "bait_evidence": questions["bait_evidence"],
+                },
+                {
+                    "duplicate_pattern": _choice_gold(
+                        questions["duplicate_pattern"],
+                        row.get("human_duplicate_pattern"),
+                        confidence,
+                    ),
+                    "bait_evidence": _noul_gold(row.get("human_bait"), confidence),
+                },
+            ),
+            (
+                "market",
+                {"market_status": questions["market_status"]},
+                {
+                    "market_status": _choice_gold(
+                        questions["market_status"],
+                        row.get("human_market_status"),
+                        confidence,
+                    )
+                },
+            ),
+        ]
 
-        content_q = {
-            "consistency": questions["consistency"],
-            "data_error_evidence": questions["data_error_evidence"],
-        }
-        content_gold: dict[str, dict[str, Any]] = {}
-        g = _score_gold(
-            questions["consistency"],
-            row.get("human_consistency_level"),
-            confidence,
-        )
-        if g:
-            content_gold["consistency"] = g
-        g = _noul_gold(row.get("human_data_error"), confidence)
-        if g:
-            content_gold["data_error_evidence"] = g
-        case = _case(
-            case_id=f"{token}:content",
-            state=build_listing_state(row, view="content"),
-            questions=content_q,
-            gold=content_gold,
-            split_hint="content",
-        )
-        if case:
-            cases.append(case)
+        for view, pack_questions, possible_gold in packs:
+            gold = {qid: g for qid, g in possible_gold.items() if g is not None}
+            case = _case(
+                case_id=f"{token}:{view}",
+                state=build_listing_state(row, view=view),
+                questions=pack_questions,
+                gold=gold,
+                split_hint=view,
+            )
+            if case:
+                cases.append(case)
 
-        bait_q = {"bait_evidence": questions["bait_evidence"]}
-        bait_gold: dict[str, dict[str, Any]] = {}
-        g = _noul_gold(row.get("human_bait"), confidence)
-        if g:
-            bait_gold["bait_evidence"] = g
-        case = _case(
-            case_id=f"{token}:bait",
-            state=build_listing_state(row, view="bait"),
-            questions=bait_q,
-            gold=bait_gold,
-            split_hint="bait",
-        )
-        if case:
-            cases.append(case)
-
-    # Stable shuffle avoids ordered case families leaking into training batches.
     rng = np.random.default_rng(seed)
     order = rng.permutation(len(cases)) if cases else []
     return [cases[int(i)] for i in order]
