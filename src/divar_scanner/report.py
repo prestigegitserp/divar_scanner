@@ -106,7 +106,8 @@ def build_html_report(df: pd.DataFrame, meta: dict[str, Any], output_path: str |
         "equivalence_sensitivity", "data_quality_score", "duplicate_similarity",
         "duplicate_cluster_size", "duplicate_bait_score",
         "decision_evaluated", "decision_disposition",
-        "decision_disposition_confidence", "decision_bait_probability",
+        "decision_disposition_confidence", "decision_answer_confidence",
+        "decision_bait_probability",
         "decision_data_error_probability", "decision_manual_review_probability",
         "decision_consistency_score", "flag_reasons", "url",
     ]
