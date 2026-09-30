@@ -23,9 +23,22 @@ class NLIModelSpec:
     license: str
     note: str
     forced_label_indices: tuple[int, int, int] | None = None  # entail, neutral, contradiction
+    engine: str = "nli"
+    subfolder: str | None = None
 
 
 NLI_MODEL_REGISTRY: dict[str, NLIModelSpec] = {
+    "laya-multilingual": NLIModelSpec(
+        backend="laya-multilingual",
+        model_name="convaiinnovations/laya",
+        license="Apache-2.0",
+        note=(
+            "Native non-autoregressive System-1 model: mmBERT-base encoder + "
+            "Laya typed-decision head trained with RLCD."
+        ),
+        engine="laya",
+        subfolder="multilingual",
+    ),
     "mdeberta-nli": NLIModelSpec(
         backend="mdeberta-nli",
         model_name=DEFAULT_NLI_MODEL,
@@ -88,6 +101,8 @@ def resolve_model_specs(
             license=spec.license,
             note=spec.note,
             forced_label_indices=spec.forced_label_indices,
+            engine=spec.engine,
+            subfolder=spec.subfolder,
         )
     return [spec]
 
@@ -632,6 +647,21 @@ def create_decision_engine(
     ).lower()
     specs = resolve_model_specs(backend, decision_config)
     temperatures = load_decision_temperatures(decision_config)
+
+    if len(specs) == 1 and specs[0].engine == "laya":
+        from .laya_backend import LayaDecisionEngine
+
+        spec = specs[0]
+        engine = LayaDecisionEngine(
+            model_id=str(decision_config.get("laya_model_id", spec.model_name)),
+            subfolder=str(decision_config.get("laya_subfolder", spec.subfolder or "multilingual")),
+            device=str(decision_config.get("device", "auto")),
+            max_length=int(decision_config.get("max_length", 1024)),
+            batch_size=int(decision_config.get("batch_size", 24)),
+            temperatures=temperatures,
+        )
+        return engine, specs, temperatures
+
     common_engine_args = {
         "device": str(decision_config.get("device", "auto")),
         "max_length": int(decision_config.get("max_length", 512)),
@@ -647,6 +677,8 @@ def create_decision_engine(
             **common_engine_args,
         )
     else:
+        if any(spec.engine != "nli" for spec in specs):
+            raise ValueError("Only NLI backends can currently be used in persian-ensemble")
         engine = EnsembleNLIDecisionEngine(
             specs,
             model_weights=decision_config.get("ensemble_weights", {}),
@@ -811,6 +843,7 @@ def _empty_decision_columns(out: pd.DataFrame) -> pd.DataFrame:
     out["decision_backend"] = ""
     out["decision_disposition"] = ""
     out["decision_disposition_confidence"] = np.nan
+    out["decision_answer_confidence"] = np.nan
     out["decision_disposition_probs_json"] = ""
     out["decision_bait_probability"] = np.nan
     out["decision_data_error_probability"] = np.nan
@@ -942,6 +975,10 @@ def apply_decisions(
         out.at[idx, "decision_backend"] = engine.backend_name
         out.at[idx, "decision_disposition"] = disp["choice"]
         out.at[idx, "decision_disposition_confidence"] = disp["confidence"]
+        out.at[idx, "decision_answer_confidence"] = disp.get(
+            "answer_confidence",
+            max(disp["probabilities"].values()),
+        )
         out.at[idx, "decision_disposition_probs_json"] = json.dumps(
             disp["probabilities"], ensure_ascii=False
         )
@@ -962,6 +999,8 @@ def apply_decisions(
                 "model": spec.model_name,
                 "license": spec.license,
                 "note": spec.note,
+                "engine": spec.engine,
+                "subfolder": spec.subfolder,
             }
             for spec in specs
         ],
@@ -972,8 +1011,16 @@ def apply_decisions(
         "temperatures": effective_temperatures,
         "calibration_file": d.get("calibration_file"),
         "probability_note": (
-            "These are NLI-derived bounded probabilities, not TypeSafe Jev's proprietary RLCD-calibrated probabilities. "
-            "For ensembles, model evidence log-odds are fused before the option softmax. "
-            "Tune temperatures on labelled Persian data before treating thresholds as calibrated."
+            (
+                "Laya returns native bounded System-1 probabilities from its RLCD-trained "
+                "decision head. This project can additionally apply target-domain "
+                "question-specific temperature scaling from labelled Tehran housing data."
+            )
+            if engine.backend_name == "laya-multilingual"
+            else (
+                "NLI-derived bounded probabilities are a research baseline, not TypeSafe "
+                "Jev's proprietary RLCD probabilities. Tune temperatures on labelled "
+                "Persian housing data before treating thresholds as calibrated."
+            )
         ),
     }
