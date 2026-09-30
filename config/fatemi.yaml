@@ -44,6 +44,11 @@ decision:
   # Primary engine: native non-autoregressive System-One decision model.
   # mmBERT encoder + typed decision head, no token generation.
   backend: "laya-multilingual"
+
+  # Laya's multilingual base is an annotation bootstrap until Persian/Fatemi
+  # held-out labels and domain adaptation justify more influence.
+  trust_stage: "bootstrap"  # bootstrap | calibrated | adapted
+
   laya_model_id: "convaiinnovations/laya"
   laya_subfolder: "multilingual"
 
@@ -97,6 +102,12 @@ scoring:
   # Misleading/bait channel: intentionally no single-listing market score.
   misleading_duplicate_weight: 0.42
   misleading_decision_weight: 0.58
+
+  # Trust caps for System-One evidence. Confidence alone is not enough because
+  # the base multilingual checkpoint can be over-confident zero-shot.
+  bootstrap_decision_multiplier: 0.25
+  calibrated_decision_multiplier: 0.45
+  adapted_decision_multiplier: 1.0
 
   # Abstention increases review priority, not fraud suspicion.
   abstain_review_uplift: 0.08
