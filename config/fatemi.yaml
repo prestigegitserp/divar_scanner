@@ -16,13 +16,14 @@ crawl:
   request_delay_seconds: 1.2
   jitter_seconds: 0.35
   timeout_seconds: 25
-  user_agent: "divar-scanner-research/0.2 (+public listing analysis)"
+  user_agent: "divar-scanner-research/0.3 (+public listing analysis)"
   redact_phone_numbers: true
   cache_dir: "data/cache"
   raw_dir: "data/raw"
 
 features:
   rent_to_deposit_multiplier: 30.0
+  rent_to_deposit_multipliers: [25.0, 30.0, 35.0]
   area_min: 10
   area_max: 1000
   rooms_max: 12
@@ -37,42 +38,26 @@ anomaly:
   duplicate_similarity_threshold: 0.88
   duplicate_max_features: 12000
 
-semantic:
+decision:
   enabled: true
-  provider: "auto"
-  provider_priority:
-    - "jev"
-    - "jev-official"
-    - "groq"
-    - "cerebras"
-    - "gemini"
-    - "cohere"
-    - "openrouter"
-    - "huggingface"
-    - "custom-openai-compatible"
-  ensemble_max_providers: 1
-  models:
-    jev: "jev-1.13.0"
-    groq: "openai/gpt-oss-20b"
-    cerebras: "gpt-oss-120b"
-    gemini: "gemini-3.8-flash"
-    cohere: "c4ai-aya-expanse-32b"
-    openrouter: "openrouter/free"
-    huggingface: "openai/gpt-oss-120b:fastest"
-    local_qwen_small: "Qwen/Qwen3-1.7B"
-    local_qwen: "Qwen/Qwen3-4B"
-    local_aya: "CohereLabs/aya-expanse-8b"
-  top_k: 80
-  local_top_k: 24
-  min_prefilter_score: 0.28
-  timeout_seconds: 30
-  retries: 2
+  backend: "mdeberta-nli"
+  model: "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
+  device: "auto"
+  strict: true
+  top_k: 60
+  min_prefilter_score: 0.24
+  max_length: 512
+  batch_size: 24
+  temperatures:
+    choice: 1.0
+    score: 1.0
+    noul: 1.0
 
 scoring:
   data_quality_weight: 0.22
   market_anomaly_weight: 0.38
   duplicate_weight: 0.16
-  semantic_weight: 0.24
+  decision_weight: 0.24
   review_threshold: 0.58
   high_risk_threshold: 0.78
 
