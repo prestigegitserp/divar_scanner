@@ -141,7 +141,22 @@ def add_duplicate_score(df: pd.DataFrame, config: Config) -> pd.DataFrame:
 
 
 def prefilter_score(df: pd.DataFrame) -> pd.Series:
-    dup = df.get("duplicate_similarity", pd.Series(0.0, index=df.index)).fillna(0.0)
-    market = df.get("market_anomaly_score", pd.Series(0.0, index=df.index)).fillna(0.0)
-    quality = df.get("data_quality_score", pd.Series(0.0, index=df.index)).fillna(0.0)
-    return np.clip(0.42 * market + 0.38 * quality + 0.20 * dup, 0, 1)
+    dup = pd.to_numeric(
+        df.get("duplicate_similarity", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0.0)
+    bait = pd.to_numeric(
+        df.get("duplicate_bait_score", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0.0)
+    market = pd.to_numeric(
+        df.get("market_anomaly_score", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0.0)
+    quality = pd.to_numeric(
+        df.get("data_quality_score", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0.0)
+    price_model = pd.to_numeric(
+        df.get("price_model_anomaly_score", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0.0)
+    return np.clip(
+        0.32 * market + 0.26 * quality + 0.18 * price_model + 0.16 * bait + 0.08 * dup,
+        0, 1,
+    )
