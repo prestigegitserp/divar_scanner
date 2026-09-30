@@ -56,3 +56,35 @@ def test_temperature_calibration_improves_nll_on_overconfident_sample():
     assert disp["n"] == 24
     assert disp["calibrated_nll"] <= disp["raw_nll"]
     assert result["temperatures"]["disposition"] > 1.0
+
+
+
+def test_calibration_accepts_native_laya_calibration_logits():
+    rows = []
+    for i in range(16):
+        target = "plausible" if i % 2 == 0 else "data_error"
+        logits = {
+            "plausible": 1.5 if target == "plausible" else -1.5,
+            "data_error": 1.5 if target == "data_error" else -1.5,
+            "market_outlier": -2.0,
+            "misleading_or_bait": -2.0,
+            "ambiguous_mixed": -2.0,
+        }
+        raw = {
+            "disposition": {
+                "diagnostics": {
+                    "calibration_logits": logits,
+                    "backend": "laya-multilingual",
+                }
+            }
+        }
+        rows.append(
+            {
+                "decision_raw_json": json.dumps(raw),
+                "human_disposition": target,
+            }
+        )
+
+    result = fit_calibration_from_frame(pd.DataFrame(rows), min_samples=12)
+    assert "disposition" in result["temperatures"]
+    assert result["questions"]["disposition"]["n"] == 16
