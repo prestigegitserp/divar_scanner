@@ -40,10 +40,13 @@ anomaly:
 
 decision:
   enabled: true
-  backend: "mdeberta-nli"
-  # Optional: set model_override only when intentionally replacing the registry model.
+  backend: "laya-multilingual"
+  # Native System-One checkpoint (Apache-2.0, mmBERT + decision head).
+  laya_model_id: "convaiinnovations/laya"
+  laya_subfolder: "multilingual"
+  # Optional NLI model override, used only by NLI baseline backends.
   model_override: null
-  # Alternative non-generative backends:
+  # Alternative non-generative research baselines:
   #   parsbert-parsinlu  (Persian specialist; CC-BY-NC-SA-4.0)
   #   mbert-parsinlu     (Persian specialist; CC-BY-NC-SA-4.0)
   #   persian-ensemble   (fuses mDeBERTa + ParsBERT evidence before option softmax)
@@ -59,7 +62,7 @@ decision:
   top_k: 60
   exploration_sample: 20
   min_prefilter_score: 0.24
-  max_length: 512
+  max_length: 1024
   batch_size: 24
   temperatures:
     choice: 1.0
