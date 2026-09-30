@@ -164,7 +164,10 @@ def normalize_listing(raw: dict[str, Any], redact_phones: bool = True) -> dict[s
         deposit = parse_number(card.get("deposit_text"))
     rent = parse_number(find_value(rows, ("اجاره ماهانه", "اجارهٔ ماهانه", "اجاره")))
     if rent is None:
-        rent = parse_number(card.get("rent_text"))
+        rent_text = card.get("rent_text")
+        rent = parse_number(rent_text)
+        if rent is None and "رهن کامل" in normalize_text(rent_text):
+            rent = 0.0
 
     area = parse_number(find_value(rows, ("متراژ", "مساحت")))
     if area is None:
