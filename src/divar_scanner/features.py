@@ -58,14 +58,40 @@ def add_features(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     out = df.copy()
     f = config.section("features")
     mult = float(f.get("rent_to_deposit_multiplier", 30.0))
+    sensitivity_mults = [
+        float(x) for x in f.get("rent_to_deposit_multipliers", [25.0, 30.0, 35.0])
+    ]
+    if mult not in sensitivity_mults:
+        sensitivity_mults.append(mult)
+    sensitivity_mults = sorted(set(sensitivity_mults))
     bucket = max(5, int(f.get("area_bucket_size", 20)))
 
-    out["equivalent_deposit_toman"] = out["deposit_toman"].fillna(0) + out[
-        "rent_monthly_toman"
-    ].fillna(0) * mult
-    out["deposit_per_m2"] = _safe_div(out["deposit_toman"], out["area_m2"])
-    out["rent_per_m2"] = _safe_div(out["rent_monthly_toman"], out["area_m2"])
-    out["equivalent_deposit_per_m2"] = _safe_div(out["equivalent_deposit_toman"], out["area_m2"])
+    deposit = pd.to_numeric(out["deposit_toman"], errors="coerce")
+    rent = pd.to_numeric(out["rent_monthly_toman"], errors="coerce")
+    both_missing = deposit.isna() & rent.isna()
+
+    out["deposit_per_m2"] = _safe_div(deposit, out["area_m2"])
+    out["rent_per_m2"] = _safe_div(rent, out["area_m2"])
+
+    for m in sensitivity_mults:
+        suffix = str(int(m)) if float(m).is_integer() else str(m).replace(".", "_")
+        equiv = deposit.fillna(0) + rent.fillna(0) * m
+        equiv = equiv.mask(both_missing)
+        out[f"equivalent_deposit_{suffix}_toman"] = equiv
+        out[f"equivalent_deposit_{suffix}_per_m2"] = _safe_div(equiv, out["area_m2"])
+
+    central_suffix = str(int(mult)) if mult.is_integer() else str(mult).replace(".", "_")
+    out["equivalent_deposit_toman"] = out[f"equivalent_deposit_{central_suffix}_toman"]
+    out["equivalent_deposit_per_m2"] = out[f"equivalent_deposit_{central_suffix}_per_m2"]
+
+    out["contract_style"] = "unknown"
+    out.loc[(deposit > 0) & (rent.fillna(0) <= 0), "contract_style"] = "full_deposit"
+    out.loc[(deposit.fillna(0) <= 0) & (rent > 0), "contract_style"] = "rent_only"
+    out.loc[(deposit > 0) & (rent > 0), "contract_style"] = "mixed"
+
+    rent_equiv = rent.fillna(0) * mult
+    denom_equiv = deposit.fillna(0) + rent_equiv
+    out["contract_rent_share"] = (rent_equiv / denom_equiv.replace(0, np.nan)).clip(0, 1)
     out["area_bucket"] = (np.floor(out["area_m2"] / bucket) * bucket).astype("Int64")
 
     missing_cols = ["area_m2", "rooms", "deposit_toman", "rent_monthly_toman", "description"]
