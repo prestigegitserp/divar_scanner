@@ -53,10 +53,11 @@ decision:
   ensemble_weights:
     mdeberta-nli: 0.55
     parsbert-parsinlu: 0.45
-  calibration_file: null
+  calibration_file: "config/fatemi_calibration.json"
   device: "auto"
   strict: true
   top_k: 60
+  exploration_sample: 20
   min_prefilter_score: 0.24
   max_length: 512
   batch_size: 24
