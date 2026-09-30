@@ -3,9 +3,9 @@ project:
   random_seed: 42
 
 crawl:
-  # Colab/cloud IPs can time out on both divar.ir and api.divar.ir.
-  # Default to Divar's official Kenar/Open Platform Finder API.
-  transport: "kenar"  # kenar | web | api | auto
+  # Default is intentionally offline: Colab/cloud IPs may not reach Divar and
+  # this project does not require Kenar. Use saved browser pages/raw snapshots.
+  transport: "snapshot"  # snapshot | web | api | auto | kenar(optional)
   city_id: "1"
   city_slug: "tehran"
   category: "apartment-rent"

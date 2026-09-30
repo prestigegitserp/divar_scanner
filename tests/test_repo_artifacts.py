@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_repository_fatemi_config_parses_cleanly():
     cfg = load_config(ROOT / "config" / "fatemi.yaml")
-    assert cfg.get("crawl.transport") == "kenar"
+    assert cfg.get("crawl.transport") == "snapshot"
     assert cfg.get("crawl.district_slug") == "fatemi"
     assert cfg.get("crawl.web_category_slug") == "rent-apartment"
     assert cfg.get("decision.backend") == "laya-multilingual"
@@ -42,9 +42,10 @@ def test_colab_notebook_avoids_package_namespace_collision_and_compiles():
     assert "REPO = '/content/divar_scanner_repo'" in code
     assert "endswith('/src/divar_scanner/__init__.py')" in code
     assert "laya-multilingual" in code
-    assert "ACQUISITION_MODE = 'kenar'" in code
-    assert "KENAR_API_KEY" in code
+    assert "ACQUISITION_MODE = 'snapshot'" in code
     assert "snapshot" in code
+    assert ".html" in code
+    assert ".zip" in code
     assert "mdeberta-nli" in code
     assert "local-qwen" not in code
     for i, source in enumerate(code_cells):

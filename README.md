@@ -206,76 +206,68 @@ The exporter uses the same opaque option transport as inference.
 
 ## Colab / Divar connectivity
 
-Some Colab/cloud runtimes cannot establish TCP connections to either `divar.ir` or
-`api.divar.ir`. The default acquisition transport is therefore Divar's **official
-Kenar / Open Platform Finder API** on the separate host `open-api.divar.ir`.
+Some Colab/cloud runtimes cannot establish TCP connections to `divar.ir` or
+`api.divar.ir`. This project therefore does **not** require Kenar for the default
+workflow. Acquisition and analysis are separated.
 
-### Recommended Colab path: Kenar
+### Recommended Colab path: browser snapshot
 
-Create a Kenar application/API key and grant the key `SEARCH_POST` permission, then
-set the secret only in the runtime:
+Open the public Fatemi search page in your normal browser/network, then save what the
+browser has already loaded.
 
-```bash
-export KENAR_API_KEY='...'
-```
+You can either:
 
-or enter it in the Colab hidden `getpass` prompt.
+1. use the browser's **Save Page / Save as HTML** command; or
+2. run `tools/save_current_divar_page.js` in DevTools Console on the already-open page.
 
-The project calls only:
+The helper JavaScript makes **no new network request**. It only serializes the current
+document and downloads it as HTML.
 
-```text
-POST https://open-api.divar.ir/v2/open-platform/finder/post
-```
-
-with:
-
-```json
-{
-  "category": "apartment-rent",
-  "city": "tehran",
-  "districts": ["fatemi"]
-}
-```
-
-Divar documents this endpoint as a **strictly quota-limited snapshot API**: there is no
-pagination and one call returns at most 100 recent matching posts. The scanner therefore
-uses it as acquisition for research snapshots, not as a polling service.
-
-Default config:
-
-```yaml
-crawl:
-  transport: kenar
-  city_slug: tehran
-  category: apartment-rent
-  district_slug: fatemi
-  kenar_enrich_details: false
-```
-
-`SEARCH_POST` alone provides token/title and structured real-estate fields such as size,
-rooms, year, parking/elevator, credit and rent. If your key also has `GET_POST`, set
-`kenar_enrich_details: true` to attempt public post-detail enrichment. Lack of
-`GET_POST` does not prevent the numeric anomaly pipeline from running.
-
-### Offline snapshot mode
-
-If no Divar-related host is reachable from Colab, acquisition and analysis are deliberately
-decoupled. Run acquisition from a network that can reach Divar/Kenar, keep the generated
-`data/raw/*.jsonl`, then upload that raw JSONL to Colab with:
+Upload one or more of these files to Colab with:
 
 ```text
 ACQUISITION_MODE = snapshot
 ```
 
-The pipeline can now normalize raw `.jsonl/.ndjson` itself, in addition to analyzing
-already-normalized CSV/Parquet. Laya and all anomaly models then run without any Divar
-network access.
+Accepted inputs:
 
-### Direct transports are optional fallbacks
+```text
+.html / .htm
+.jsonl / .ndjson
+.csv / .parquet
+.zip
+directory of multiple snapshot files
+```
 
-`transport: web` parses the public server-rendered search page. `transport: api` is the
-legacy `api.divar.ir` path. `transport: auto` prefers Kenar when `KENAR_API_KEY` is
-present, then tries the direct paths.
+Multiple pages/snapshots are merged and deduplicated by listing token (or URL). This makes
+it practical to collect several pages or repeated snapshots over time and then run the
+full statistical + Laya pipeline with **zero Divar network access from Colab**.
+
+Default config:
+
+```yaml
+crawl:
+  transport: snapshot
+  district_slug: fatemi
+```
+
+### Local direct acquisition
+
+If your own machine/network can reach Divar, the existing direct transport remains
+available:
+
+```bash
+divar-scanner run \
+  --config config/fatemi.yaml \
+  --crawl-transport web \
+  --max-listings 200
+```
+
+That writes raw JSONL snapshots which can later be uploaded to Colab.
+
+`transport: api` and `transport: auto` remain research/compatibility paths. Kenar code is
+still present as an optional transport for users who explicitly want it, but it is not
+required or used by the default notebook/config.
 
 No proxy rotation, CAPTCHA bypass, login/OTP flow, or access-control circumvention is used.
 
