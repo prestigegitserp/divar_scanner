@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import time
@@ -15,6 +16,7 @@ import requests
 from tqdm.auto import tqdm
 
 from .config import Config
+from .kenar import KenarClient, KenarAuthError
 
 DIVAR_API_BASE = "https://api.divar.ir"
 DIVAR_WEB_BASE = "https://divar.ir"
@@ -247,8 +249,9 @@ def extract_server_rendered_cards(document: str) -> list[dict[str, Any]]:
 class DivarCrawler:
     """Polite crawler for public Divar listing/search responses.
 
-    Preferred Colab transport is the public server-rendered search page. The legacy
-    api.divar.ir transport remains available when that host is reachable. The crawler
+    Preferred cloud transport is Divar's official Kenar/Open Platform when a
+    KENAR_API_KEY is available. The public server-rendered page and legacy
+    api.divar.ir transports remain optional fallbacks. The crawler
     does not use contact-info endpoints, login/OTP, browser automation, CAPTCHA bypass,
     proxy rotation, or personal-account endpoints.
     """
@@ -546,6 +549,43 @@ class DivarCrawler:
         self._sleep()
         return data
 
+
+    def _crawl_kenar(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        client = KenarClient(self.config)
+        if not client.available:
+            raise KenarAuthError(
+                "crawl.transport='kenar' requires KENAR_API_KEY in the runtime environment."
+            )
+        result = client.search()
+        raw_path = client.write_raw_snapshot(result)
+        rows = result.rows
+        meta = {
+            "crawl_transport": "kenar",
+            "listing_count": len(rows),
+            "district_slug": self.district_slug,
+            "district_ids": [],
+            "district_matches": [
+                {
+                    "id": f"slug:{self.district_slug}",
+                    "name": str(self.config.get("crawl.district_query", self.district_slug)),
+                    "score": 1.0,
+                }
+            ],
+            "raw_path": raw_path,
+            "crawled_at_utc": result.searched_at_utc,
+            "source_urls": [
+                "https://open-api.divar.ir/v2/open-platform/finder/post"
+            ],
+            "official_api": True,
+            "kenar_detail_enrichment": bool(client.enrich_details),
+            "coverage_note": (
+                "Kenar SEARCH_POST is an official bounded snapshot endpoint. "
+                "Divar documents a strict overall call quota and no pagination; "
+                "the response contains at most 100 recent matching posts."
+            ),
+        }
+        return rows, meta
+
     def _crawl_web(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         cards, source_urls = self.search_web()
         rows = [
@@ -622,23 +662,31 @@ class DivarCrawler:
         return rows, meta
 
     def crawl(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if self.transport not in {"web", "api", "auto"}:
-            raise ValueError("crawl.transport must be one of: web, api, auto")
+        if self.transport not in {"kenar", "web", "api", "auto"}:
+            raise ValueError("crawl.transport must be one of: kenar, web, api, auto")
 
+        if self.transport == "kenar":
+            return self._crawl_kenar()
         if self.transport == "web":
             return self._crawl_web()
         if self.transport == "api":
             return self._crawl_api()
 
-        # Auto is intentionally web-first: Colab/cloud IPs can time out on api.divar.ir
-        # while the public server-rendered page remains reachable.
         errors: list[str] = []
+
+        if os.getenv("KENAR_API_KEY"):
+            try:
+                return self._crawl_kenar()
+            except (requests.RequestException, ValueError, RuntimeError) as exc:
+                errors.append(f"kenar:{type(exc).__name__}:{exc}")
+
         try:
             return self._crawl_web()
         except (requests.RequestException, ValueError, DivarBlockedError) as exc:
             errors.append(f"web:{type(exc).__name__}:{exc}")
             if isinstance(exc, DivarBlockedError):
                 raise
+
         try:
             rows, meta = self._crawl_api()
             meta["transport_fallback_errors"] = errors
@@ -646,8 +694,12 @@ class DivarCrawler:
         except (requests.RequestException, ValueError, RuntimeError) as exc:
             errors.append(f"api:{type(exc).__name__}:{exc}")
             raise DivarTransportError(
-                "Both supported Divar transports failed. "
-                "No access-control bypass was attempted. Errors: " + " | ".join(errors)
+                "All configured Divar transports failed. No proxy/access-control bypass "
+                "was attempted. Errors: "
+                + " | ".join(errors)
+                + " Direct Divar access appears unavailable from this runtime. "
+                "Use Divar's official Kenar/Open Platform with KENAR_API_KEY + SEARCH_POST, "
+                "or acquire a snapshot in a network that can reach Divar and analyze it in Colab."
             ) from exc
 
 
