@@ -11,6 +11,9 @@ import pandas as pd
 
 LABEL_COLUMNS = {
     "disposition": "human_disposition",
+    "integrity_class": "human_integrity_class",
+    "duplicate_pattern": "human_duplicate_pattern",
+    "market_status": "human_market_status",
     "bait_evidence": "human_bait",
     "data_error_evidence": "human_data_error",
     "manual_review": "human_manual_review",
@@ -39,7 +42,12 @@ def _parse_bool_label(value: Any) -> str | None:
 
 
 def _target_key(question_id: str, value: Any) -> str | None:
-    if question_id == "disposition":
+    if question_id in {
+        "disposition",
+        "integrity_class",
+        "duplicate_pattern",
+        "market_status",
+    }:
         s = str(value or "").strip()
         return s or None
     if question_id in {"bait_evidence", "data_error_evidence", "manual_review"}:
