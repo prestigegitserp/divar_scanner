@@ -249,11 +249,12 @@ def extract_server_rendered_cards(document: str) -> list[dict[str, Any]]:
 class DivarCrawler:
     """Polite crawler for public Divar listing/search responses.
 
-    Preferred cloud transport is Divar's official Kenar/Open Platform when a
-    KENAR_API_KEY is available. The public server-rendered page and legacy
-    api.divar.ir transports remain optional fallbacks. The crawler
-    does not use contact-info endpoints, login/OTP, browser automation, CAPTCHA bypass,
-    proxy rotation, or personal-account endpoints.
+    The project default is the automatic Playwright browser transport, which navigates
+    only public search/listing pages on the user's own reachable network. Direct HTTP,
+    legacy API, snapshot and optional Kenar transports remain available for compatibility.
+
+    No transport uses contact-info endpoints, login/OTP, CAPTCHA solving, proxy rotation,
+    browser-fingerprint spoofing, or personal-account endpoints.
     """
 
     def __init__(self, config: Config):
