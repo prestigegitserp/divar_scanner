@@ -67,6 +67,11 @@ def _provider_candidates(config: Config) -> list[ProviderRuntime]:
             "gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
             _env("GEMINI_API_KEY") or "", str(models.get("gemini", "gemini-3.8-flash"))
         ))
+    if _env("COHERE_API_KEY"):
+        candidates.append(ProviderRuntime(
+            "cohere", "https://api.cohere.ai/compatibility/v1/chat/completions",
+            _env("COHERE_API_KEY") or "", str(models.get("cohere", "c4ai-aya-expanse-32b"))
+        ))
     if _env("OPENROUTER_API_KEY"):
         candidates.append(ProviderRuntime(
             "openrouter", "https://openrouter.ai/api/v1/chat/completions",
@@ -101,7 +106,7 @@ def resolve_providers(config: Config) -> list[ProviderRuntime]:
 
     preferred = s.get(
         "provider_priority",
-        ["jev", "jev-official", "groq", "cerebras", "gemini", "openrouter", "huggingface", "custom-openai-compatible"],
+        ["jev", "jev-official", "groq", "cerebras", "gemini", "cohere", "openrouter", "huggingface", "custom-openai-compatible"],
     )
     order = {name: i for i, name in enumerate(preferred)}
     all_candidates.sort(key=lambda p: order.get(p.name, 999))
