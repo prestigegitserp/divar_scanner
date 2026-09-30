@@ -285,7 +285,28 @@ def _read_input(path: str | Path) -> pd.DataFrame:
         return pd.read_parquet(p)
     if p.suffix.lower() in {".csv", ".txt"}:
         return pd.read_csv(p)
-    raise ValueError(f"Unsupported input format: {p.suffix}")
+    raise ValueError(f"Unsupported normalized input format: {p.suffix}")
+
+
+def _read_raw_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    p = Path(path)
+    rows: list[dict[str, Any]] = []
+    with p.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid JSONL at {p}:{line_number}: {exc}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"Raw JSONL row {line_number} must be an object, got {type(value).__name__}"
+                )
+            rows.append(value)
+    return rows
 
 
 def run_pipeline(
@@ -297,7 +318,7 @@ def run_pipeline(
     config = load_config(config_path)
     meta: dict[str, Any] = {
         "project": config.get("project.name", "Divar Scanner"),
-        "pipeline_version": "0.4.1",
+        "pipeline_version": "0.4.2",
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": str(config_path),
     }
@@ -314,7 +335,17 @@ def run_pipeline(
     else:
         if input_path is None:
             raise ValueError("input_path is required when crawl=False")
-        df = _read_input(input_path)
+        p = Path(input_path)
+        if p.suffix.lower() in {".jsonl", ".ndjson"}:
+            raw = _read_raw_jsonl(p)
+            df = normalize_many(
+                raw,
+                redact_phones=bool(config.get("crawl.redact_phone_numbers", True)),
+            )
+            meta["input_format"] = "raw_jsonl"
+        else:
+            df = _read_input(p)
+            meta["input_format"] = "normalized_table"
         meta["input_path"] = str(input_path)
 
     if df.empty:

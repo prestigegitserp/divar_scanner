@@ -92,6 +92,9 @@ def extract_description(detail: dict[str, Any]) -> str:
         if isinstance(text, str) and text.strip():
             bonus = 1000 if "description" in t else 0
             candidates.append((" " * bonus) + text.strip())
+        description = data.get("description")
+        if isinstance(description, str) and description.strip():
+            candidates.append((" " * 1200) + description.strip())
     seo = detail.get("seo") if isinstance(detail, dict) else None
     if isinstance(seo, dict) and isinstance(seo.get("description"), str):
         candidates.append(seo["description"].strip())
@@ -161,8 +164,12 @@ def normalize_listing(raw: dict[str, Any], redact_phones: bool = True) -> dict[s
 
     deposit = parse_number(find_value(rows, ("ودیعه", "رهن", "مبلغ ودیعه")))
     if deposit is None:
+        deposit = parse_number(card.get("deposit_toman_hint"))
+    if deposit is None:
         deposit = parse_number(card.get("deposit_text"))
     rent = parse_number(find_value(rows, ("اجاره ماهانه", "اجارهٔ ماهانه", "اجاره")))
+    if rent is None:
+        rent = parse_number(card.get("rent_toman_hint"))
     if rent is None:
         rent_text = card.get("rent_text")
         rent = parse_number(rent_text)
@@ -178,6 +185,8 @@ def normalize_listing(raw: dict[str, Any], redact_phones: bool = True) -> dict[s
             area = parse_number(card.get("area_hint"))
 
     year = parse_int(find_value(rows, ("ساخت", "سال ساخت")))
+    if year is None:
+        year = parse_int(card.get("year_hint"))
 
     rooms = parse_int(find_value(rows, ("اتاق", "تعداد اتاق")))
     if rooms is None:
@@ -201,10 +210,18 @@ def normalize_listing(raw: dict[str, Any], redact_phones: bool = True) -> dict[s
         "year_built_shamsi": year,
         "deposit_toman": deposit,
         "rent_monthly_toman": rent,
-        "parking": parse_bool(find_value(rows, ("پارکینگ",))),
-        "elevator": parse_bool(find_value(rows, ("آسانسور",))),
+        "parking": (
+            parse_bool(find_value(rows, ("پارکینگ",)))
+            if find_value(rows, ("پارکینگ",)) is not None
+            else parse_bool(card.get("parking_hint"))
+        ),
+        "elevator": (
+            parse_bool(find_value(rows, ("آسانسور",)))
+            if find_value(rows, ("آسانسور",)) is not None
+            else parse_bool(card.get("elevator_hint"))
+        ),
         "storage": parse_bool(find_value(rows, ("انباری",))),
-        "floor": str(find_value(rows, ("طبقه",)) or ""),
+        "floor": str(find_value(rows, ("طبقه",)) or card.get("floor_hint") or ""),
         "crawl_error": raw.get("crawl_error", ""),
         "structured_fields_json": json.dumps(rows, ensure_ascii=False),
     }

@@ -206,37 +206,78 @@ The exporter uses the same opaque option transport as inference.
 
 ## Colab / Divar connectivity
 
-The default Fatemi crawler now uses the public server-rendered search page:
+Some Colab/cloud runtimes cannot establish TCP connections to either `divar.ir` or
+`api.divar.ir`. The default acquisition transport is therefore Divar's **official
+Kenar / Open Platform Finder API** on the separate host `open-api.divar.ir`.
 
-```text
-https://divar.ir/s/tehran/rent-apartment/fatemi
+### Recommended Colab path: Kenar
+
+Create a Kenar application/API key and grant the key `SEARCH_POST` permission, then
+set the secret only in the runtime:
+
+```bash
+export KENAR_API_KEY='...'
 ```
 
-and parses the page's public `window.__PRELOADED_STATE__` plus JSON-LD. It does **not** need the
-`api.divar.ir/v8/places/cities/1/districts` endpoint in the default Colab flow.
+or enter it in the Colab hidden `getpass` prompt.
 
-This specifically avoids the common Colab/cloud failure:
+The project calls only:
 
 ```text
-ConnectTimeout: Connection to api.divar.ir timed out
+POST https://open-api.divar.ir/v2/open-platform/finder/post
 ```
 
-Relevant config:
+with:
+
+```json
+{
+  "category": "apartment-rent",
+  "city": "tehran",
+  "districts": ["fatemi"]
+}
+```
+
+Divar documents this endpoint as a **strictly quota-limited snapshot API**: there is no
+pagination and one call returns at most 100 recent matching posts. The scanner therefore
+uses it as acquisition for research snapshots, not as a polling service.
+
+Default config:
 
 ```yaml
 crawl:
-  transport: web
-  search_page_url: https://divar.ir/s/tehran/rent-apartment/fatemi
+  transport: kenar
+  city_slug: tehran
+  category: apartment-rent
   district_slug: fatemi
+  kenar_enrich_details: false
 ```
 
-Set `transport: api` only if `api.divar.ir` is reachable from your runtime. `transport: auto`
-tries the public web page first and then the legacy API. No proxy rotation, CAPTCHA bypass, or
-access-control circumvention is used.
+`SEARCH_POST` alone provides token/title and structured real-estate fields such as size,
+rooms, year, parking/elevator, credit and rent. If your key also has `GET_POST`, set
+`kenar_enrich_details: true` to attempt public post-detail enrichment. Lack of
+`GET_POST` does not prevent the numeric anomaly pipeline from running.
 
-The SSR mode can expose fewer rows than the API pagination path. The run metadata records the
-actual source URLs and listing count, and the crawler stops when another rendered page yields no
-new listing tokens rather than looping or increasing request pressure.
+### Offline snapshot mode
+
+If no Divar-related host is reachable from Colab, acquisition and analysis are deliberately
+decoupled. Run acquisition from a network that can reach Divar/Kenar, keep the generated
+`data/raw/*.jsonl`, then upload that raw JSONL to Colab with:
+
+```text
+ACQUISITION_MODE = snapshot
+```
+
+The pipeline can now normalize raw `.jsonl/.ndjson` itself, in addition to analyzing
+already-normalized CSV/Parquet. Laya and all anomaly models then run without any Divar
+network access.
+
+### Direct transports are optional fallbacks
+
+`transport: web` parses the public server-rendered search page. `transport: api` is the
+legacy `api.divar.ir` path. `transport: auto` prefers Kenar when `KENAR_API_KEY` is
+present, then tries the direct paths.
+
+No proxy rotation, CAPTCHA bypass, login/OTP flow, or access-control circumvention is used.
 
 ## Google Colab
 

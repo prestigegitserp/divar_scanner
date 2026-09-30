@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -56,15 +57,20 @@ def collect() -> dict:
         "decision_dependencies_ready": decision_ready,
         "packages": packages,
         "gpu": gpu,
+        "kenar_api_key_present": bool(os.getenv("KENAR_API_KEY")),
     }
 
 
 def network_check(timeout: int = 10) -> dict:
     out = {}
     checks = {
-        "divar_web_fatemi": (
+        "kenar_open_api": (
+            "https://open-api.divar.ir/v1/open-platform/assets/city",
+            min(timeout, 8),
+        ),
+        "divar_web_fatemi_optional": (
             "https://divar.ir/s/tehran/rent-apartment/fatemi",
-            min(timeout, 10),
+            min(timeout, 6),
         ),
         # Optional legacy transport. Keep this probe short: cloud/Colab IPs may
         # simply be unable to connect to api.divar.ir.
@@ -79,10 +85,13 @@ def network_check(timeout: int = 10) -> dict:
     }
     for name, (url, check_timeout) in checks.items():
         try:
+            headers = {"User-Agent": "divar-scanner-doctor/0.4.2"}
+            if name == "kenar_open_api" and os.getenv("KENAR_API_KEY"):
+                headers["X-API-Key"] = os.environ["KENAR_API_KEY"]
             r = requests.get(
                 url,
                 timeout=check_timeout,
-                headers={"User-Agent": "divar-scanner-doctor/0.4.1"},
+                headers=headers,
             )
             out[name] = {
                 "status": r.status_code,
@@ -95,10 +104,11 @@ def network_check(timeout: int = 10) -> dict:
                 "timeout_seconds": check_timeout,
             }
     out["interpretation"] = {
-        "preferred_crawl_transport": "server-rendered web page",
+        "preferred_crawl_transport": "official Kenar/Open Platform",
         "api_note": (
-            "api.divar.ir is optional for the default Fatemi Colab flow. "
-            "A timeout there does not imply that the public divar.ir search page is unavailable."
+            "For Colab, prefer open-api.divar.ir with KENAR_API_KEY + SEARCH_POST. "
+            "Direct divar.ir and api.divar.ir are optional fallbacks and may be unreachable "
+            "from some cloud runtimes."
         ),
     }
     return out
