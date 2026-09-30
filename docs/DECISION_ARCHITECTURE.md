@@ -1,105 +1,74 @@
-# Decision architecture: Jev-style, non-generative
+# Decision architecture — Laya-first System-One v0.4
 
-This project deliberately separates **generation** from **decision**. The default decision layer does not ask a language model to write JSON and does not parse generated tokens.
+The project treats decision as a different computational object from text generation.
 
-## Observable Jev contract we preserve
+## Primary runtime
 
-TypeSafe Jev publicly exposes three bounded primitives:
+`laya-multilingual` is the default engine. It uses a multilingual encoder and typed decision head. Candidate options are supplied by the caller; the model does not autoregressively write an answer string.
 
-- `choice`: one option from a caller-supplied set + option probabilities
-- `score`: an ordered level distribution + fractional score
-- `noul`: a yes/no probability
+This project preserves the observable Jev contract — bounded `choice`, `score`, and `noul` — without claiming to reproduce TypeSafe's private weights or proprietary training recipe.
 
-The exact proprietary Jev weights/training internals are not public. Therefore this project reproduces the **decision contract**, not TypeSafe's undisclosed RLCD training.
+## Primitive compiler
 
-## Default open model
+For robustness, all logical primitives are transported through opaque closed choices:
 
-`MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7`
+    logical choice / score / noul
+               ↓
+      opaque A/B/C/... options
+               ↓
+        Laya decision head
+               ↓
+       bounded probabilities
+               ↓
+      map back to logical type
 
-This is an encoder-style sequence-classification / NLI model, not a text generator. It is based on multilingual DeBERTa and is used only to classify premise/hypothesis pairs into entailment, neutral or contradiction.
+For score, the returned logical value is the expected ordered level. For noul, the returned logical value is P(yes). No free-form output is generated.
 
-For every user-supplied decision option we create one hypothesis. The model evaluates all options, then code converts those bounded NLI outputs into a probability distribution.
+## Option-order robustness
 
-### Candidate evidence
+Each question schema is evaluated under deterministic option permutations. By default pass 0 uses canonical order and pass 1 reverses it. Every result is mapped back to canonical logical keys and pooled geometrically.
 
-For option `i`:
+Order instability is measured with normalized Jensen-Shannon divergence. `decision_order_stability = 1 - normalized_JSD`.
 
-```text
-e_i = log P(entailment_i) - log P(contradiction_i)
-```
+## Evidence firewall
 
-Then:
+Four state views reduce shortcut leakage:
 
-```text
-P(option_i) = softmax(e_i / T)
-```
+- content: ad text + structured fields + consistency evidence; no market anomaly.
+- bait: content + duplicate graph; no single-listing market anomaly.
+- market: structured facts + statistical market evidence; no persuasive ad copy.
+- full: all evidence, only for final disposition and manual-review need.
 
-`T` is a temperature that should eventually be fit on labelled Persian examples.
+Thus a cheap or expensive outlier is not automatically interpreted as deception.
 
-No candidate identifier is generated. If an option is not provided, it cannot be returned.
+## Cross-question coherence
 
-## Mapping to Jev primitives
+Independent typed questions must agree. For example, data-error probability should align with integrity classification and consistency; misleading disposition should align with bait/duplicate decisions; market-outlier disposition should align with market status.
 
-### Choice
+The resulting `decision_coherence_score` is part of selective prediction.
 
-One premise + N candidate hypotheses.
+## Selective prediction / abstention
 
-```text
-state + option_1 description -> NLI evidence e1
-state + option_2 description -> NLI evidence e2
-...
-softmax(e1..eN) -> probabilities
-argmax -> choice
-```
+Model confidence, option-order stability, and cross-question coherence produce `decision_effective_confidence`. Below configured thresholds the decision layer abstains.
 
-### Noul
+Abstention means 'send to human review', not 'this is fraud'.
 
-Exactly two hypotheses: `no` and `yes`.
+## Three independent risk channels
 
-```text
-P(yes) = softmax(e_no, e_yes)[yes]
-```
+- `data_problem_score`: record corruption, extraction problems, structured/text inconsistencies.
+- `market_outlier_score`: unusual market position relative to peers and price models.
+- `misleading_risk_score`: bait/misrepresentation evidence from bounded decisions and contradictory duplicate clusters.
 
-### Score
+Market-outlier evidence is intentionally not injected directly into misleading risk.
 
-Each ordered level is a bounded candidate. After getting probabilities `p_k`:
+## Review priority
 
-```text
-score = sum(k * p_k)
-normalized_score = score / (K - 1)
-```
+`review_priority_score` combines the strongest independent channels with uncertainty, explicit manual-review probability, and a small abstention uplift. It is a triage score, not a probability of criminal fraud.
 
-## Confidence
+## Calibration and fine-tuning
 
-TypeSafe does not disclose the exact proprietary confidence formula. This project therefore labels its confidence honestly as a derived diagnostic:
+Question-specific temperature scaling is fit from held-out human labels. The exporter `divar-scanner export-laya-training` creates Laya state/questions/gold JSONL with the same opaque-marker transport used at inference.
 
-1. concentration of the option distribution via normalized entropy
-2. penalized by weighted NLI neutral mass
+## Baselines
 
-This is useful for routing, but is **not** a guarantee of correctness.
-
-## Why this is preferable to an LLM for this project
-
-- no free-form text generation
-- no JSON parsing failure mode
-- output space is mathematically bounded
-- option order is explicit
-- probabilities come from classifier logits
-- dynamic labels/descriptions are supported without retraining a fixed K-class head
-- a ~280M multilingual encoder is practical on Colab CPU/GPU
-
-## Why it is not identical to proprietary Jev
-
-Jev's current public documentation describes RLCD-calibrated typed decisions, but its internal architecture and weights are not public. mDeBERTa NLI was trained for natural-language inference, not specifically for Iranian housing fraud/anomaly decisions.
-
-Therefore the next research milestone should be **Persian calibration / domain adaptation**, not pretending zero-shot probabilities are already calibrated.
-
-## Optional comparison models
-
-### AlexWortega/openjev
-
-This is a genuine open Jev-style sequence-classification project: a cross-encoder produces entailment/contradiction/neutral and exposes typed decisions without generation. It is very relevant for benchmarking Jev-style mechanics. However its current checkpoints use a Qwen3.5-derived backbone, so it is not the default here because this project intentionally wants a non-LLM encoder backbone.
-
-### GLiClass
-
-GLiClass is an efficient zero-shot sequence classifier supporting arbitrary label descriptions. It is a strong future comparison backend, especially for one-pass multi-label classification. The default project stays on NLI first because the probability semantics of entailment/contradiction map cleanly to Jev-style choice/noul/score primitives and are easier to audit.
+mDeBERTa NLI, ParsBERT ParsiNLU, mBERT ParsiNLU and the Persian NLI ensemble remain research baselines only. They are non-generative but are not native System-One typed-decision heads.
