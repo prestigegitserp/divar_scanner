@@ -58,7 +58,7 @@ def add_price_model_anomaly(df: pd.DataFrame, config: Config) -> pd.DataFrame:
 
     numeric_cols = [
         "area_m2", "rooms", "year_built_shamsi", "parking", "elevator", "storage",
-        "description_len", "deposit_toman", "rent_monthly_toman",
+        "description_len",
     ]
     X = pd.DataFrame(index=out.index)
     for col in numeric_cols:
