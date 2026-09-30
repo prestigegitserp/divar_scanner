@@ -25,7 +25,7 @@ def collect() -> dict:
         name: bool(os.getenv(name))
         for name in (
             "JEV_API_KEY", "TYPESAFE_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY",
-            "GEMINI_API_KEY", "OPENROUTER_API_KEY", "HF_TOKEN",
+            "GEMINI_API_KEY", "COHERE_API_KEY", "OPENROUTER_API_KEY", "HF_TOKEN",
             "OPENAI_COMPAT_API_KEY",
         )
     }
