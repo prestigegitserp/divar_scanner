@@ -41,7 +41,8 @@ anomaly:
 decision:
   enabled: true
   backend: "mdeberta-nli"
-  model: "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7"
+  # Optional: set model_override only when intentionally replacing the registry model.
+  model_override: null
   # Alternative non-generative backends:
   #   parsbert-parsinlu  (Persian specialist; CC-BY-NC-SA-4.0)
   #   mbert-parsinlu     (Persian specialist; CC-BY-NC-SA-4.0)
